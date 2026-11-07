@@ -80,4 +80,30 @@ select pg_temp.act_as('00000000-0000-0000-0000-00000000000c');
 select pg_temp.check((select count(*) from public.posts) = 0, 'private review post now hidden');
 select pg_temp.check((select count(*) from public.comments) = 0, 'comments hidden with their post');
 
+-- marginalia: drafts, highlights, tags
+select pg_temp.act_as('00000000-0000-0000-0000-00000000000b');
+insert into public.quotes (id, user_id, book_id, body, visibility, is_draft, highlight, tags)
+  values ('20000000-0000-0000-0000-000000000004', '00000000-0000-0000-0000-00000000000b', '10000000-0000-0000-0000-000000000001', 'Draft passage', 'public', true, 'lavender', '{house,tides}');
+select pg_temp.check((select count(*) from public.quotes where is_draft) = 1, 'author sees own draft');
+do $$ begin
+  begin
+    insert into public.posts (user_id, kind, book_id, quote_id) values ('00000000-0000-0000-0000-00000000000b', 'quote', '10000000-0000-0000-0000-000000000001', '20000000-0000-0000-0000-000000000004');
+    raise exception 'FAILED: a draft got a post';
+  exception when check_violation then raise notice 'ok: drafts cannot be posted';
+  end;
+  begin
+    update public.quotes set tags = '{Shouting}' where id = '20000000-0000-0000-0000-000000000004';
+    raise exception 'FAILED: invalid tag accepted';
+  exception when check_violation then raise notice 'ok: tags are validated';
+  end;
+end $$;
+select pg_temp.act_as('00000000-0000-0000-0000-00000000000a');
+select pg_temp.check((select count(*) from public.quotes where id = '20000000-0000-0000-0000-000000000004') = 0, 'follower cannot see a public draft');
+update public.quotes set body = 'vandalised' where id = '20000000-0000-0000-0000-000000000002';
+select pg_temp.check((select body from public.quotes where id = '20000000-0000-0000-0000-000000000002') = 'The Beauty of the House', 'cannot edit another reader''s annotation');
+select pg_temp.act_as('00000000-0000-0000-0000-00000000000b');
+update public.quotes set is_draft = false where id = '20000000-0000-0000-0000-000000000004';
+select pg_temp.act_as('00000000-0000-0000-0000-00000000000c');
+select pg_temp.check((select count(*) from public.quotes where id = '20000000-0000-0000-0000-000000000004') = 1, 'published public annotation is visible to everyone');
+
 rollback;

@@ -177,6 +177,106 @@
     color: var(--color-burgundy);
   }
 
+  /* ── Marginalia ───────────────────────────────────────────────────────────
+     A highlighter stroke behind a passage: a little short of the line top and
+     bottom, softened at the ends, cloned onto every wrapped line. */
+  .hl-butter { --hl: rgb(233 210 140 / 0.72); --hl-solid: #e9d28c; }
+  .hl-sage { --hl: rgb(166 180 140 / 0.55); --hl-solid: #b5bf9c; }
+  .hl-rose { --hl: rgb(217 160 150 / 0.5); --hl-solid: #ddb0a7; }
+  .hl-lavender { --hl: rgb(186 172 222 / 0.5); --hl-solid: #c5b9e3; }
+  .hl-blue { --hl: rgb(150 186 218 / 0.5); --hl-solid: #b0cbe2; }
+  .marker {
+    background-image: linear-gradient(100deg, transparent 0.12em, var(--hl) 0.3em, var(--hl) calc(100% - 0.3em), transparent calc(100% - 0.1em));
+    background-size: 100% 74%;
+    background-position: 0 62%;
+    background-repeat: no-repeat;
+    -webkit-box-decoration-break: clone;
+    box-decoration-break: clone;
+    padding: 0 0.18em;
+    color: var(--color-ink);
+  }
+
+  /* ── Bookshelf ────────────────────────────────────────────────────────────
+     Wall-mounted oak planks behind a shelf of books. Every row of a shelf is
+     the same height (--shelf-row), so one layer paints a plank under each row:
+     the top surface, a front face (--plank thick) and the shadow it casts on the
+     wall, repeating down the shelf. --shelf-base is where the front face starts.
+     Grain runs lengthwise and is continuous across the whole row. */
+  .shelf-planks {
+    --top: calc(var(--shelf-base) - var(--plank) * 0.6);
+    --face: var(--shelf-base);
+    --edge: calc(var(--shelf-base) + var(--plank));
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+  }
+  .shelf-planks::before,
+  .shelf-planks::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+  }
+  /* wood, masked to the plank band of each row */
+  .shelf-planks::before {
+    background:
+      url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='40'><filter id='g'><feTurbulence type='fractalNoise' baseFrequency='.018 .5' numOctaves='3' seed='7' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.22  0 0 0 0 0.12  0 0 0 0 0.05  0 0 0 0.38 0'/></filter><rect width='100%' height='100%' filter='url(%23g)'/></svg>"),
+      repeating-linear-gradient(to bottom, rgb(255 228 190 / 0.06) 0 1px, transparent 1px 3px, rgb(58 30 12 / 0.12) 3px 4px, transparent 4px 7px),
+      repeating-linear-gradient(
+        to bottom,
+        transparent 0 var(--top),
+        #9a6b42 var(--top),
+        #c99a66 var(--face),
+        #f0c993 var(--face),
+        #a26b41 calc(var(--face) + 1.5px),
+        #85552f calc(var(--face) + var(--plank) * 0.55),
+        #693f23 var(--edge),
+        transparent var(--edge) var(--shelf-row)
+      );
+    mask-image: repeating-linear-gradient(to bottom, transparent 0 var(--top), #000 var(--top) var(--edge), transparent var(--edge) var(--shelf-row));
+  }
+  /* the shadow each plank throws on the wall below it */
+  .shelf-planks::after {
+    background: repeating-linear-gradient(
+      to bottom,
+      transparent 0 var(--edge),
+      rgb(58 36 20 / 0.32) var(--edge),
+      rgb(58 36 20 / 0) calc(var(--edge) + var(--plank) * 1.2),
+      transparent calc(var(--edge) + var(--plank) * 1.2) var(--shelf-row)
+    );
+  }
+
+  /* The home bookcase: uprights and a cornice in the same oak as the planks. */
+  .bookcase-wood {
+    --grain-v: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='40' height='240'><filter id='g'><feTurbulence type='fractalNoise' baseFrequency='.5 .018' numOctaves='3' seed='3' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.22  0 0 0 0 0.12  0 0 0 0 0.05  0 0 0 0.38 0'/></filter><rect width='100%' height='100%' filter='url(%23g)'/></svg>");
+    background:
+      var(--grain-v),
+      linear-gradient(90deg, #6a4024 0%, #96613a 18%, #a26b41 50%, #8a5832 82%, #5e391f 100%);
+    box-shadow: inset 0 0 0 1px rgb(38 20 8 / 0.25), 0 10px 24px -14px rgb(41 28 16 / 0.6);
+  }
+  .bookcase-cornice {
+    background:
+      url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='40'><filter id='g'><feTurbulence type='fractalNoise' baseFrequency='.018 .5' numOctaves='3' seed='9' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.22  0 0 0 0 0.12  0 0 0 0 0.05  0 0 0 0.38 0'/></filter><rect width='100%' height='100%' filter='url(%23g)'/></svg>"),
+      linear-gradient(to bottom, #c99a66 0%, #a26b41 28%, #85552f 70%, #5e391f 100%);
+    box-shadow: 0 6px 14px -6px rgb(41 28 16 / 0.55);
+  }
+  /* The wall behind each shelf: papered, a little shadowed under the shelf above. */
+  .bookcase-back {
+    background-image:
+      linear-gradient(to bottom, rgb(58 36 20 / 0.22), rgb(58 36 20 / 0) 2.25rem),
+      repeating-linear-gradient(90deg, rgb(41 44 39 / 0.035) 0 1px, transparent 1px 22px);
+  }
+
+  /* Spine: the light rolling round a cloth-bound back */
+  .book-spine-shade {
+    background: linear-gradient(90deg, rgb(0 0 0 / 0.32) 0%, rgb(255 255 255 / 0.1) 22%, rgb(255 255 255 / 0.04) 45%, rgb(0 0 0 / 0.06) 70%, rgb(0 0 0 / 0.34) 100%);
+  }
+  /* pages visible on the fore-edge */
+  .book-fore-edge {
+    background: repeating-linear-gradient(90deg, #f2e8d3 0 1px, #dccdb0 1px 2px);
+    box-shadow: inset 0 0 0 1px rgb(41 44 39 / 0.12);
+  }
+
   .scrollbar-none { scrollbar-width: none; }
   .scrollbar-none::-webkit-scrollbar { display: none; }
 
@@ -213,3 +313,18 @@ dialog.dialog[open]::backdrop { animation: fade-in 0.2s ease; }
 @keyframes dialog-in { from { opacity: 0; transform: translateY(24px); } to { opacity: 1; transform: none; } }
 @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes pop { 0% { transform: scale(1); } 40% { transform: scale(1.35) rotate(-8deg); } 100% { transform: scale(1); } }
+
+/* Landing-page mood strip: two copies of the list slide by one copy's width, so the loop has no seam. */
+@keyframes mood-scroll { to { transform: translateX(-50%); } }
+.mood-marquee { position: relative; }
+.mood-marquee::before,
+.mood-marquee::after { content: ""; position: absolute; inset-block: 0; width: 4rem; z-index: 1; pointer-events: none; }
+.mood-marquee::before { left: 0; background: linear-gradient(90deg, var(--color-ink), transparent); }
+.mood-marquee::after { right: 0; background: linear-gradient(-90deg, var(--color-ink), transparent); }
+.mood-track { animation: mood-scroll 70s linear infinite; }
+.mood-marquee:hover .mood-track,
+.mood-marquee:focus-within .mood-track { animation-play-state: paused; }
+@media (prefers-reduced-motion: reduce) {
+  .mood-marquee { overflow-x: auto; scrollbar-width: none; }
+  .mood-track { animation: none; }
+}

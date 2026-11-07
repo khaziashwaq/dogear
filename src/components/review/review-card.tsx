@@ -1,8 +1,9 @@
+import { Heart, MessageCircle } from "lucide-react";
 import Link from "next/link";
 import { BookCover } from "@/components/book/book-cover";
 import { ReviewBody } from "@/components/feed/post-card";
 import { Avatar } from "@/components/profile/avatar";
-import { bookHref } from "@/lib/book-ref";
+import { bookHref, reviewHref } from "@/lib/book-ref";
 import type { Review } from "@/lib/types";
 import { authorLine, cn, formatDate } from "@/lib/utils";
 
@@ -29,9 +30,20 @@ export function ReviewCard({ review, showBook = false, className }: { review: Re
             </Link>
           )}
           <div className={cn(showBook && "mt-3")}><ReviewBody review={review} /></div>
-          <Link href={href} className="meta mt-3 inline-block text-burgundy hover:text-ink">
-            {review.body.length > 420 ? "Read the full review" : "Open thread"} →
-          </Link>
+          <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1">
+            <Link href={href} className="meta text-burgundy hover:text-ink">
+              {review.body.length > 420 ? "Read the full review" : "Open thread"} →
+            </Link>
+            {(review.likesCount > 0 || review.commentsCount > 0) && (
+              <span className="meta inline-flex items-center gap-3 normal-case tracking-normal">
+                {review.likesCount > 0 && <span className="inline-flex items-center gap-1"><Heart className="size-3" aria-hidden />{review.likesCount}<span className="sr-only"> likes</span></span>}
+                {review.commentsCount > 0 && <span className="inline-flex items-center gap-1"><MessageCircle className="size-3" aria-hidden />{review.commentsCount}<span className="sr-only"> comments</span></span>}
+              </span>
+            )}
+            {review.visibility === "public" && review.author.username && (
+              <Link href={reviewHref(review, true)} className="meta hover:text-burgundy">review page</Link>
+            )}
+          </div>
         </div>
       </div>
     </article>

@@ -1,18 +1,19 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { BookTile } from "@/components/book/book-tile";
+import { BookshelfRow, SpineMark } from "@/components/book/bookshelf";
 import { DiscoverTile } from "@/components/feed/discover-tile";
 import { ListCard } from "@/components/list/list-card";
 import { ReaderCard } from "@/components/profile/reader-card";
+import { ReviewCard } from "@/components/review/review-card";
 import { chipClass } from "@/components/ui/chip";
 import { Sparkle } from "@/components/ui/doodles";
 import { EmptyState } from "@/components/ui/empty-state";
 import { SectionHeading } from "@/components/ui/section-heading";
 import { SearchBox } from "@/components/ui/search-box";
-import { getStore } from "@/lib/auth";
+import { getStore, getViewer } from "@/lib/auth";
 import { GENRES, MOODS } from "@/lib/data/seed/books";
 import { openLibrarySubject } from "@/lib/openlibrary";
-import type { Book } from "@/lib/types";
+import type { Book, Profile, SavedBook } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 export const metadata: Metadata = { title: "Discover" };
@@ -66,22 +67,32 @@ export default async function DiscoverPage({ searchParams }: PageProps<"/discove
         {local.length + more.length === 0 ? (
           <EmptyState className="mt-10" title="No books here yet" body="Readers haven't tagged anything with this one. Search for a favourite and add it to your shelf." />
         ) : (
-          <div className="mt-8 grid grid-cols-2 gap-x-5 gap-y-8 sm:grid-cols-4 lg:grid-cols-6">
-            {[...local, ...more].map((b, i) => <BookTile key={b.id ?? b.olWorkId} book={b} priority={i < 6} />)}
-          </div>
+          <BookshelfRow
+            className="mt-8"
+            label={`${genre ?? m?.label} books`}
+            size="md"
+            priorityCount={6}
+            items={[...local, ...more].map((b) => ({ key: b.id ?? b.olWorkId ?? b.title, book: b }))}
+          />
         )}
         {more.length > 0 && <p className="meta mt-8 text-center">More {genre} from Open Library</p>}
       </div>
     );
   }
 
-  const [trending, feed, lists, readers, recent] = await Promise.all([
+  const viewer = await getViewer();
+  const [trending, feed, lists, readers, recent, fromCircle] = await Promise.all([
     store.trendingBooks(12),
     store.getFeed("discover", null, 30),
     store.popularLists(6),
     store.suggestedReaders(6),
     store.recentlyReviewedBooks(8),
+    viewer ? lovedByFollowing(viewer.id) : Promise.resolve([]),
   ]);
+  const popularReviews = feed.items
+    .flatMap((p) => (p.kind === "review" && p.review && !p.review.containsSpoilers ? [{ review: p.review, likes: p.likesCount }] : []))
+    .sort((a, b) => b.likes - a.likes)
+    .slice(0, 3);
   const tiles = feed.items.filter((p) => ["quote", "list", "review", "finished", "recommendation"].includes(p.kind === "repost" ? p.repostOf?.kind ?? "" : p.kind));
 
   return (
@@ -101,14 +112,41 @@ export default async function DiscoverPage({ searchParams }: PageProps<"/discove
         <section className="mt-12" aria-labelledby="trending">
           <SectionHeading kicker="this month" title="Trending books" />
           <h2 id="trending" className="sr-only">Trending books</h2>
-          <ul className="scrollbar-none -mx-4 flex gap-5 overflow-x-auto px-4 pb-3 sm:mx-0 sm:px-0">
-            {trending.map((b, i) => (
-              <li key={b.id} className="relative w-28 shrink-0 sm:w-32">
-                <span className="absolute -left-2 -top-3 z-10 font-serif text-4xl italic text-burgundy drop-shadow-[1px_1px_0_var(--color-paper)]">{i + 1}</span>
-                <BookTile book={b} priority={i < 4} />
-              </li>
-            ))}
-          </ul>
+          <BookshelfRow
+            label="Trending books"
+            layout="scroll"
+            size="md"
+            priorityCount={4}
+            className="-mx-4 px-4 sm:mx-0 sm:px-0"
+            items={trending.map((b, i) => ({
+              key: b.id,
+              book: b,
+              mark: <SpineMark>{i + 1}</SpineMark>,
+            }))}
+          />
+        </section>
+      )}
+
+      {fromCircle.length > 0 && (
+        <section className="mt-12" aria-labelledby="circle-h">
+          <SectionHeading kicker="from your circle" title="Loved by readers you follow" />
+          <h2 id="circle-h" className="sr-only">Loved by readers you follow</h2>
+          <BookshelfRow
+            label="Loved by readers you follow"
+            layout="scroll"
+            size="md"
+            className="-mx-4 px-4 sm:mx-0 sm:px-0"
+            items={fromCircle.map(({ book, by }) => ({
+              key: book.id,
+              book,
+              details: (
+                <p className="hand text-lg leading-none text-burgundy">
+                  loved by {by.slice(0, 2).map((p) => p.displayName.split(" ")[0]).join(" & ")}
+                  {by.length > 2 ? ` +${by.length - 2}` : ""}
+                </p>
+              ),
+            }))}
+          />
         </section>
       )}
 
@@ -124,9 +162,18 @@ export default async function DiscoverPage({ searchParams }: PageProps<"/discove
         )}
       </section>
 
+      {popularReviews.length > 0 && (
+        <section className="mt-14">
+          <SectionHeading kicker="the margins" title="Popular reviews" />
+          <div className="grid gap-5 lg:grid-cols-3">
+            {popularReviews.map(({ review }) => <ReviewCard key={review.id} review={review} showBook />)}
+          </div>
+        </section>
+      )}
+
       {lists.length > 0 && (
         <section className="mt-14">
-          <SectionHeading kicker="collections" title="Popular lists" />
+          <SectionHeading kicker="collections" title="Trending lists" />
           <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
             {lists.map((l) => <ListCard key={l.id} list={l} />)}
           </div>
@@ -145,9 +192,7 @@ export default async function DiscoverPage({ searchParams }: PageProps<"/discove
       {recent.length > 0 && (
         <section className="mt-14">
           <SectionHeading kicker="fresh ink" title="Recently reviewed" />
-          <div className="grid grid-cols-3 gap-x-4 gap-y-6 sm:grid-cols-4 lg:grid-cols-8">
-            {recent.map((b) => <BookTile key={b.id} book={b} />)}
-          </div>
+          <BookshelfRow label="Recently reviewed" size="sm" items={recent.map((b) => ({ key: b.id, book: b }))} />
         </section>
       )}
 
@@ -161,4 +206,27 @@ export default async function DiscoverPage({ searchParams }: PageProps<"/discove
       </section>
     </div>
   );
+}
+
+/**
+ * Books the people you follow rated 4★ or more that aren't on any of your shelves yet,
+ * most-loved first. Reads at most eight followed readers' shelves.
+ */
+async function lovedByFollowing(viewerId: string): Promise<{ book: SavedBook; by: Profile[]; score: number }[]> {
+  const store = await getStore();
+  const [following, mine] = await Promise.all([store.listFollowing(viewerId), store.getShelf(viewerId, {})]);
+  if (following.length === 0) return [];
+  const have = new Set(mine.map((ub) => ub.bookId));
+  const shelves = await Promise.all(following.slice(0, 8).map(async (p) => ({ p, books: await store.getShelf(p.id, { status: "read", sort: "rating" }) })));
+  const picks = new Map<string, { book: SavedBook; by: Profile[]; score: number }>();
+  for (const { p, books } of shelves) {
+    for (const ub of books) {
+      if (have.has(ub.bookId) || (ub.rating ?? 0) < 4) continue;
+      const entry = picks.get(ub.bookId) ?? { book: ub.book, by: [], score: 0 };
+      entry.by.push(p);
+      entry.score += ub.rating ?? 0;
+      picks.set(ub.bookId, entry);
+    }
+  }
+  return [...picks.values()].sort((a, b) => b.by.length - a.by.length || b.score - a.score).slice(0, 14);
 }

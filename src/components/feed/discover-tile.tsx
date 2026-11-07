@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { BookCover } from "@/components/book/book-cover";
+import { BookshelfRow } from "@/components/book/bookshelf";
 import { ListCard } from "@/components/list/list-card";
 import { Avatar } from "@/components/profile/avatar";
 import { QuoteCard } from "@/components/quote/quote-card";
@@ -24,8 +24,8 @@ export function DiscoverTile({ post }: { post: Post }) {
     return (
       <Link href={`/post/${p.id}`} className="paper dogear group block overflow-hidden transition-transform hover:-translate-y-1">
         {tall && (
-          <div className="flex justify-center bg-paper-deep px-6 pb-0 pt-6">
-            <BookCover title={r.book.title} authors={r.book.authors} coverUrl={r.book.coverUrl} size="lg" className="translate-y-3" />
+          <div className="flex justify-center bg-paper-deep pt-2">
+            <BookshelfRow decorative hoverParent layout="ledge" size="md" items={[{ key: r.book.id, book: r.book }]} />
           </div>
         )}
         <div className="p-4">
@@ -44,7 +44,7 @@ export function DiscoverTile({ post }: { post: Post }) {
     return (
       <Link href={`/post/${p.id}`} className="block border border-line bg-sage/25 p-4 transition-transform hover:-translate-y-1">
         <div className="flex items-center gap-3">
-          <BookCover title={p.book.title} authors={p.book.authors} coverUrl={p.book.coverUrl} size="sm" />
+          <BookshelfRow decorative hoverParent layout="ledge" size="sm" className="shrink-0" items={[{ key: p.book.id ?? p.book.title, book: p.book }]} />
           <div className="min-w-0">
             <p className="hand text-xl leading-none text-burgundy">{p.kind === "finished" ? "just finished" : p.kind === "started" ? "just started" : "recommends"}</p>
             <p className="mt-1 font-serif text-lg leading-tight">{p.book.title}</p>

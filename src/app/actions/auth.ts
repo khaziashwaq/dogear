@@ -2,14 +2,7 @@
 
 import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
-import { z } from "zod";
 import { env, isSupabaseConfigured } from "@/lib/env";
-import type { Result } from "@/lib/action-result";
-
-const credentials = z.object({
-  email: z.string().trim().toLowerCase().email("That email doesn't look right."),
-  password: z.string().min(8, "Passwords need at least 8 characters.").max(128),
-});
 
 function safeNext(next: unknown) {
   return typeof next === "string" && next.startsWith("/") && !next.startsWith("//") ? next : "/home";
@@ -29,62 +22,6 @@ async function setDemoSession(userId: string) {
     path: "/",
     maxAge: 60 * 60 * 24 * 30,
   });
-}
-
-export async function signUpAction(_: Result<string> | null, form: FormData): Promise<Result<string>> {
-  const parsed = credentials.safeParse({ email: form.get("email"), password: form.get("password") });
-  if (!parsed.success) return { ok: false, error: parsed.error.issues[0].message };
-  const { email, password } = parsed.data;
-
-  if (isSupabaseConfigured) {
-    const { createSupabaseServerClient } = await import("@/lib/supabase/server");
-    const sb = await createSupabaseServerClient();
-    const { data, error } = await sb.auth.signUp({
-      email,
-      password,
-      options: { emailRedirectTo: `${await origin()}/auth/callback?next=/onboarding` },
-    });
-    if (error) return { ok: false, error: error.message };
-    if (!data.session) return { ok: true, data: "check-email" };
-    redirect("/onboarding");
-  }
-
-  const { getDemoDB, saveDemoDB, hashPassword, newId } = await import("@/lib/data/demo/db");
-  const db = getDemoDB();
-  if (db.users.some((u) => u.email === email)) return { ok: false, error: "An account with that email already exists." };
-  const id = newId();
-  db.users.push({ id, email, ...hashPassword(password) });
-  db.profiles.push({
-    id, username: null, displayName: "", bio: "", avatarUrl: null, coverUrl: null, pronouns: null, location: null, website: null,
-    accent: "burgundy", motif: "dogear", favouriteGenres: [], favouriteAuthors: [], readingGoal: null, onboarded: false,
-    createdAt: new Date().toISOString(),
-  });
-  saveDemoDB();
-  await setDemoSession(id);
-  redirect("/onboarding");
-}
-
-export async function signInAction(_: Result<string> | null, form: FormData): Promise<Result<string>> {
-  const parsed = credentials.safeParse({ email: form.get("email"), password: form.get("password") });
-  const next = safeNext(form.get("next"));
-  if (!parsed.success) return { ok: false, error: parsed.error.issues[0].message };
-  const { email, password } = parsed.data;
-
-  if (isSupabaseConfigured) {
-    const { createSupabaseServerClient } = await import("@/lib/supabase/server");
-    const sb = await createSupabaseServerClient();
-    const { error } = await sb.auth.signInWithPassword({ email, password });
-    if (error) return { ok: false, error: "That email and password don't match." };
-    redirect(next);
-  }
-
-  const { getDemoDB, hashPassword } = await import("@/lib/data/demo/db");
-  const user = getDemoDB().users.find((u) => u.email === email);
-  if (!user || hashPassword(password, user.salt).passwordHash !== user.passwordHash) {
-    return { ok: false, error: "That email and password don't match." };
-  }
-  await setDemoSession(user.id);
-  redirect(next);
 }
 
 export async function googleSignInAction(form: FormData) {

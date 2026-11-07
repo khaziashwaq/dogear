@@ -1,5 +1,6 @@
 import "server-only";
 import type {
+  MarginaliaQuery,
   BookInput,
   BookReader,
   BookStats,
@@ -107,10 +108,30 @@ export class DemoStore implements DataStore {
     return this.db.posts.find((p) => p[field] === id)?.id ?? null;
   }
   private review(row: ReviewRow): Review {
-    return { ...row, postId: this.postIdFor("reviewId", row.id), author: this.profile(row.userId), book: this.book(row.bookId) };
+    const postId = this.postIdFor("reviewId", row.id);
+    return {
+      ...row,
+      postId,
+      likesCount: postId ? this.db.likes.filter((l) => l.postId === postId).length : 0,
+      commentsCount: postId ? this.db.comments.filter((c) => c.postId === postId).length : 0,
+      author: this.profile(row.userId),
+      book: this.book(row.bookId),
+    };
   }
   private quote(row: QuoteRow): Quote {
-    return { ...row, postId: this.postIdFor("quoteId", row.id), author: this.profile(row.userId), book: this.book(row.bookId) };
+    const postId = this.postIdFor("quoteId", row.id);
+    return {
+      ...row,
+      highlight: row.highlight ?? "butter",
+      tags: row.tags ?? [],
+      isDraft: row.isDraft ?? false,
+      updatedAt: row.updatedAt ?? row.createdAt,
+      postId,
+      likesCount: postId ? this.db.likes.filter((l) => l.postId === postId).length : 0,
+      commentsCount: postId ? this.db.comments.filter((c) => c.postId === postId).length : 0,
+      author: this.profile(row.userId),
+      book: this.book(row.bookId),
+    };
   }
   private listSummary(row: ListRow): ReadingList {
     const books = this.db.listBooks.filter((lb) => lb.listId === row.id).sort((a, b) => a.position - b.position);
@@ -507,23 +528,29 @@ export class DemoStore implements DataStore {
     this.commit();
   }
 
-  // ── quotes ──────────────────────────────────────────────────────────
+  // ── quotes (annotations) ────────────────────────────────────────────
+  /** Same rule as the RLS policy: drafts are the author's alone. */
+  private canViewQuote(q: QuoteRow) {
+    return q.userId === this.viewerId || (!q.isDraft && this.canView(q.userId, q.visibility));
+  }
   async getQuote(id: string) {
     const row = this.db.quotes.find((q) => q.id === id);
-    return row && this.canView(row.userId, row.visibility) ? this.quote(row) : null;
+    return row && this.canViewQuote(row) ? this.quote(row) : null;
   }
   async listQuotesForBook(bookId: string, limit = 20) {
-    return this.db.quotes.filter((q) => q.bookId === bookId && this.canView(q.userId, q.visibility)).sort(byNewest).slice(0, limit).map((q) => this.quote(q));
+    return this.db.quotes.filter((q) => q.bookId === bookId && !q.isDraft && this.canViewQuote(q)).sort(byNewest).slice(0, limit).map((q) => this.quote(q));
   }
   async listQuotesByUser(userId: string, limit = 60) {
-    return this.db.quotes.filter((q) => q.userId === userId && this.canView(q.userId, q.visibility)).sort(byNewest).slice(0, limit).map((q) => this.quote(q));
+    return this.db.quotes.filter((q) => q.userId === userId && this.canViewQuote(q)).sort(byNewest).slice(0, limit).map((q) => this.quote(q));
   }
   async createQuote(input: QuoteInput) {
     const me = this.me();
     this.book(input.bookId);
-    const row: QuoteRow = { id: newId(), userId: me, ...input, createdAt: nowIso() };
+    const now = nowIso();
+    const row: QuoteRow = { id: newId(), userId: me, ...input, createdAt: now, updatedAt: now };
     this.db.quotes.push(row);
-    this.db.posts.push({ ...blankPost(me, "quote", input.bookId), quoteId: row.id, visibility: row.visibility });
+    // A draft has no post until it's published.
+    if (!input.isDraft) this.db.posts.push({ ...blankPost(me, "quote", input.bookId), quoteId: row.id, visibility: row.visibility });
     this.commit();
     return this.quote(row);
   }
@@ -531,10 +558,45 @@ export class DemoStore implements DataStore {
     const me = this.me();
     const row = this.db.quotes.find((q) => q.id === id && q.userId === me);
     if (!row) throw new NotFoundError("Quote not found");
-    Object.assign(row, { ...input, bookId: row.bookId });
+    if (input.isDraft && !row.isDraft) throw new ValidationError("A published annotation can't become a draft again.");
+    const publishing = row.isDraft && !input.isDraft;
+    Object.assign(row, { ...input, bookId: row.bookId, updatedAt: nowIso() });
+    if (publishing) {
+      // Published now: it joins the feeds, dated from today.
+      row.createdAt = row.updatedAt!;
+      this.db.posts.push({ ...blankPost(me, "quote", row.bookId), quoteId: row.id, visibility: row.visibility });
+    }
     this.db.posts.filter((p) => p.quoteId === id).forEach((p) => (p.visibility = row.visibility));
     this.commit();
     return this.quote(row);
+  }
+  async listMarginalia(query: MarginaliaQuery, cursor: string | null, limit = 18) {
+    const following = query.tab === "following" ? new Set([this.me(), ...(await this.followingIds())]) : null;
+    const rows = this.db.posts.filter((p) => {
+      if (p.kind !== "quote" || !p.quoteId || p.repostOfId || !this.visiblePost(p)) return false;
+      if (following ? !following.has(p.userId) : p.visibility !== "public") return false;
+      const q = this.db.quotes.find((x) => x.id === p.quoteId);
+      if (!q || q.isDraft) return false;
+      if (query.bookId && q.bookId !== query.bookId) return false;
+      if (query.tag && !(q.tags ?? []).includes(query.tag)) return false;
+      if (query.genre && !this.book(q.bookId).genres.includes(query.genre)) return false;
+      return true;
+    });
+    if (query.tab !== "popular") return this.page(rows, cursor, limit);
+    // Popular pages by offset: likes, then newest.
+    const likes = (id: string) => this.db.likes.filter((l) => l.postId === id).length;
+    const sorted = [...rows].sort((a, b) => likes(b.id) - likes(a.id) || byNewest(a, b));
+    const offset = cursor?.startsWith("o:") ? Number(cursor.slice(2)) || 0 : 0;
+    const slice = sorted.slice(offset, offset + limit);
+    return { items: slice.map((p) => this.hydratePost(p)), nextCursor: offset + limit < sorted.length ? `o:${offset + limit}` : null };
+  }
+  async marginaliaTags(limit = 24) {
+    const counts = new Map<string, number>();
+    for (const q of this.db.quotes) {
+      if (q.isDraft || q.visibility !== "public") continue;
+      for (const t of q.tags ?? []) counts.set(t, (counts.get(t) ?? 0) + 1);
+    }
+    return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, limit).map(([tag, count]) => ({ tag, count }));
   }
   async deleteQuote(id: string) {
     const me = this.me();

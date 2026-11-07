@@ -1,16 +1,13 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { JACKET_PALETTES, jacketColours } from "@/lib/jacket";
 import { authorLine, cn, hash } from "@/lib/utils";
 
-const PALETTES = [
-  { bg: "#743F48", fg: "#E9D9A8", accent: "#D9A9A0" },
-  { bg: "#A6AC91", fg: "#292C27", accent: "#F5F0E7" },
-  { bg: "#D9A9A0", fg: "#5A2F37", accent: "#F5F0E7" },
-  { bg: "#E9D9A8", fg: "#292C27", accent: "#743F48" },
-  { bg: "#292C27", fg: "#F5F0E7", accent: "#D9A9A0" },
-  { bg: "#7D8468", fg: "#F5F0E7", accent: "#E9D9A8" },
-];
+const PALETTES = JACKET_PALETTES;
+
+/** The typeset-jacket colours for a book — shared with the shelf spine so a coverless book matches front and side. */
+export const jacketPalette = jacketColours;
 
 type Size = "xs" | "sm" | "md" | "lg" | "xl" | "fill";
 const widths: Record<Size, string> = {
@@ -38,6 +35,7 @@ export function BookCover({
   className,
   priority,
   tilt = 0,
+  bare = false,
 }: {
   title: string;
   authors: string[];
@@ -46,6 +44,8 @@ export function BookCover({
   className?: string;
   priority?: boolean;
   tilt?: number;
+  /** Fill the parent exactly (no aspect ratio, width or shadow) — for PhysicalBook, which sizes and lights the book itself. */
+  bare?: boolean;
 }) {
   const [failed, setFailed] = useState(!coverUrl);
   const img = useRef<HTMLImageElement>(null);
@@ -61,7 +61,11 @@ export function BookCover({
 
   return (
     <div
-      className={cn("relative aspect-[2/3] shrink-0 overflow-hidden rounded-[1px] shadow-[var(--shadow-book)]", widths[size], className)}
+      className={cn(
+        "relative shrink-0 overflow-hidden rounded-[1px]",
+        bare ? "size-full" : ["aspect-[2/3] shadow-[var(--shadow-book)]", widths[size]],
+        className,
+      )}
       style={tilt ? { transform: `rotate(${tilt}deg)` } : undefined}
     >
       {!failed && coverUrl ? (

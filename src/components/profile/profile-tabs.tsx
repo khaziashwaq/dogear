@@ -12,7 +12,7 @@ export function ProfileTabs({ username }: { username: string }) {
     { href: `${base}/shelves`, label: "Shelves" },
     { href: `${base}/reviews`, label: "Reviews" },
     { href: `${base}/lists`, label: "Lists" },
-    { href: `${base}/quotes`, label: "Quotes" },
+    { href: `${base}/quotes`, label: "Marginalia" },
     { href: `${base}/stats`, label: "Reading year" },
   ];
   return (

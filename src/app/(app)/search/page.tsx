@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { BookTile } from "@/components/book/book-tile";
+import { BookshelfRow } from "@/components/book/bookshelf";
 import { ReaderRow } from "@/components/profile/reader-card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { SearchBox } from "@/components/ui/search-box";
@@ -38,13 +38,13 @@ export default async function SearchPage({ searchParams }: PageProps<"/search">)
           {local.length > 0 && (
             <section>
               <SectionHeading kicker="on dogear." title="Books readers have shelved" />
-              <div className="grid grid-cols-3 gap-x-4 gap-y-6 sm:grid-cols-4 lg:grid-cols-6">{local.map((b) => <BookTile key={b.id} book={b} />)}</div>
+              <BookshelfRow label="Books readers have shelved" size="md" priorityCount={8} items={local.map((b) => ({ key: b.id ?? b.title, book: b }))} />
             </section>
           )}
           {fromOL.length > 0 && (
             <section>
               <SectionHeading kicker="from Open Library" title="More books" />
-              <div className="grid grid-cols-3 gap-x-4 gap-y-6 sm:grid-cols-4 lg:grid-cols-6">{fromOL.map((b) => <BookTile key={b.olWorkId} book={b} />)}</div>
+              <BookshelfRow label="More books from Open Library" size="md" items={fromOL.map((b) => ({ key: b.olWorkId ?? b.title, book: b }))} />
             </section>
           )}
           {remote.length === 0 && local.length > 0 && <p className="meta">Open Library didn&rsquo;t respond — showing books already on dogear.</p>}

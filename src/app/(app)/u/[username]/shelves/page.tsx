@@ -2,6 +2,7 @@ import { LayoutGrid, List } from "lucide-react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { BookCover } from "@/components/book/book-cover";
+import { BookshelfSection, SpineMark } from "@/components/book/bookshelf";
 import { ButtonLink } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Stars } from "@/components/ui/stars";
@@ -48,6 +49,10 @@ export default async function ShelvesPage({ params, searchParams }: PageProps<"/
     return s ? `${base}?${s}` : base;
   };
   const title = status ? STATUSES.find((s) => s.key === status)!.label : favourites ? "Favourites" : shelf ? shelf : "All shelves";
+  const filtered = Boolean(status || favourites || shelf);
+  const groups = [...STATUSES, { key: "none" as const, label: "Shelved without a status" }]
+    .map((st) => ({ key: st.key, label: st.label as string | null, books: books.filter((ub) => (ub.status ?? "none") === st.key) }))
+    .filter((g) => g.books.length > 0);
   const total = summary.counts.read + summary.counts.reading + summary.counts.want_to_read + summary.counts.dnf;
 
   const pill = (active: boolean) => cn("flex items-center justify-between gap-3 px-3 py-2 text-sm transition-colors", active ? "bg-ink text-paper" : "hover:bg-paper-deep");
@@ -81,7 +86,7 @@ export default async function ShelvesPage({ params, searchParams }: PageProps<"/
               </div>
             </details>
             <div className="flex border border-line-strong bg-card" role="group" aria-label="View">
-              <Link href={href({ view: undefined })} aria-label="Cover grid" aria-current={view === "grid" ? "true" : undefined} className={cn("p-2", view === "grid" ? "bg-ink text-paper" : "text-ink-soft hover:text-ink")}><LayoutGrid className="size-4" /></Link>
+              <Link href={href({ view: undefined })} aria-label="Bookshelf" aria-current={view === "grid" ? "true" : undefined} className={cn("p-2", view === "grid" ? "bg-ink text-paper" : "text-ink-soft hover:text-ink")}><LayoutGrid className="size-4" /></Link>
               <Link href={href({ view: "list" })} aria-label="List" aria-current={view === "list" ? "true" : undefined} className={cn("p-2", view === "list" ? "bg-ink text-paper" : "text-ink-soft hover:text-ink")}><List className="size-4" /></Link>
             </div>
           </div>
@@ -95,19 +100,31 @@ export default async function ShelvesPage({ params, searchParams }: PageProps<"/
             action={own ? <ButtonLink href="/discover">Browse books</ButtonLink> : undefined}
           />
         ) : view === "grid" ? (
-          <div className="grid grid-cols-3 gap-x-4 gap-y-10 sm:grid-cols-4 lg:grid-cols-5">
-            {books.map((ub) => (
-              <Link key={ub.id} href={bookHref(ub.book)} className="group relative block">
-                <div className="relative border-b-[6px] border-burgundy-deep/70 pb-1">
-                  <BookCover title={ub.book.title} authors={ub.book.authors} coverUrl={ub.book.coverUrl} size="fill" className="transition-transform duration-300 group-hover:-translate-y-2" />
-                  {ub.isFavourite && <span className="absolute -right-1.5 -top-1.5 rounded-full bg-burgundy px-1.5 text-xs text-paper" aria-label="Favourite">♥</span>}
-                </div>
-                <p className="mt-2 line-clamp-1 text-sm group-hover:text-burgundy">{ub.book.title}</p>
-                <div className="flex items-center gap-2">
-                  <Stars value={ub.rating} size="xs" />
-                  {ub.status === "reading" && ub.progressPages && ub.book.pageCount ? <span className="meta">{Math.round((ub.progressPages / ub.book.pageCount) * 100)}%</span> : null}
-                </div>
-              </Link>
+          // On "All", each reading status gets its own shelf; a filtered view is one long run of shelves.
+          <div className="space-y-12">
+            {(filtered ? [{ key: "all", label: null as string | null, books }] : groups).map((g) => (
+              <BookshelfSection
+                key={g.key}
+                id={`shelf-${g.key}`}
+                title={g.label ?? title}
+                count={g.books.length}
+                headingHidden={!g.label}
+                label={g.label ?? title}
+                size="md"
+                priorityCount={6}
+                items={g.books.map((ub) => ({
+                  key: ub.id,
+                  book: ub.book,
+                  mark: ub.isFavourite ? <SpineMark tone="burgundy"><span aria-hidden>♥</span></SpineMark> : undefined,
+                  details: (
+                    <div className="flex items-center gap-2">
+                      <Stars value={ub.rating} size="xs" />
+                      {ub.isFavourite && <span className="meta text-burgundy">favourite</span>}
+                      {ub.status === "reading" && ub.progressPages && ub.book.pageCount ? <span className="meta">{Math.round((ub.progressPages / ub.book.pageCount) * 100)}%</span> : null}
+                    </div>
+                  ),
+                }))}
+              />
             ))}
           </div>
         ) : (

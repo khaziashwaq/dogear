@@ -1,13 +1,15 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { BookCover } from "@/components/book/book-cover";
+import { BookshelfRow } from "@/components/book/bookshelf";
+import { ReadingJournal } from "@/components/book/reading-journal";
 import { ShelfActions } from "@/components/book/shelf-actions";
 import { PostCard } from "@/components/feed/post-card";
 import { ListCard } from "@/components/list/list-card";
 import { Avatar } from "@/components/profile/avatar";
-import { QuoteCard } from "@/components/quote/quote-card";
+import { MarginaliaFeed } from "@/components/quote/marginalia-feed";
 import { ReviewCard } from "@/components/review/review-card";
+import { Highlighter } from "lucide-react";
 import { ButtonLink } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { SectionHeading } from "@/components/ui/section-heading";
@@ -25,24 +27,47 @@ export async function generateMetadata({ params }: PageProps<"/book/[key]">): Pr
 
 const STATUS_LABEL = { read: "read it", reading: "reading", want_to_read: "wants to", dnf: "DNF" } as const;
 
-export default async function BookPage({ params }: PageProps<"/book/[key]">) {
+const SORTS = [
+  { key: "recent", label: "Newest" },
+  { key: "liked", label: "Most liked" },
+  { key: "rating", label: "Highest rated" },
+] as const;
+
+export default async function BookPage({ params, searchParams }: PageProps<"/book/[key]">) {
   const { key } = await params;
+  const sp = await searchParams;
+  const sort = SORTS.find((s) => s.key === sp.sort)?.key ?? "recent";
+  const msort = sp.marks === "recent" ? "recent" : "popular";
   const book = await lookupBook(key);
   if (!book) notFound();
   if (book.slug && key !== book.slug) redirect(`/book/${book.slug}`);
 
   const [store, viewer] = await Promise.all([getStore(), getViewer()]);
   const id = book.id;
-  const [stats, userBook, reviews, quotes, lists, readers, posts, following] = await Promise.all([
+  const [stats, userBook, allReviews, marginalia, lists, readers, posts, following, myReviews, myQuotes, sessions] = await Promise.all([
     id ? store.getBookStats(id) : emptyStats(),
     id ? store.getUserBook(id) : null,
-    id ? store.listReviewsForBook(id, 12) : [],
-    id ? store.listQuotesForBook(id, 6) : [],
+    id ? store.listReviewsForBook(id, 60) : [],
+    id ? store.listMarginalia({ tab: msort, bookId: id }, null, 12) : { items: [], nextCursor: null },
     id ? store.listListsForBook(id, 6) : [],
     id ? store.getBookReaders(id, 30) : [],
     id ? store.getBookPosts(id, 4) : [],
     viewer ? store.listFollowing(viewer.id) : [],
+    viewer && id ? store.listReviewsByUser(viewer.id, 200).then((rs) => rs.filter((r) => r.bookId === id)) : [],
+    viewer && id ? store.listQuotesByUser(viewer.id, 200).then((qs) => qs.filter((q) => q.bookId === id)) : [],
+    viewer && id ? store.listSessions(id) : [],
   ]);
+  const reviews = [...allReviews]
+    .sort((a, b) =>
+      sort === "liked"
+        ? b.likesCount - a.likesCount || b.createdAt.localeCompare(a.createdAt)
+        : sort === "rating"
+          ? (b.rating ?? 0) - (a.rating ?? 0) || b.likesCount - a.likesCount
+          : b.createdAt.localeCompare(a.createdAt),
+    )
+    .slice(0, 12);
+  const readingNow = readers.filter((r) => r.status === "reading");
+  const shelvedIt = readers.filter((r) => r.status !== "reading");
   const maxBucket = Math.max(1, ...stats.histogram);
   const followingIds = new Set(following.map((f) => f.id));
   const friendsWhoRead = readers.filter((r) => followingIds.has(r.profile.id));
@@ -57,12 +82,24 @@ export default async function BookPage({ params }: PageProps<"/book/[key]">) {
             <p className="mt-1 font-serif text-xl italic text-ink-soft">{authorLine(book.authors)}</p>
           </div>
           <div className="relative mx-auto w-48 sm:w-60 md:w-full">
-            <div className="tape -top-3 left-1/2 z-10 -translate-x-1/2 -rotate-2" aria-hidden />
-            <BookCover title={book.title} authors={book.authors} coverUrl={book.coverUrl} size="fill" priority className="rotate-[-1.5deg]" />
+            <BookshelfRow
+              decorative
+              face="cover"
+              layout="fit"
+              size="xl"
+              align="center"
+              priorityCount={1}
+              items={[{ key: book.id ?? book.olWorkId ?? book.title, book, badge: <div className="tape -top-3 left-1/2 z-10 -translate-x-1/2 -rotate-2" aria-hidden /> }]}
+            />
           </div>
           <div className="mt-8">
             <ShelfActions book={book} userBook={userBook} signedIn={Boolean(viewer)} following={following} />
           </div>
+          {viewer && (
+            <ButtonLink href={`/quotes/new?book=${encodeURIComponent(book.slug ?? book.olWorkId ?? "")}`} variant="paper" className="mt-3 w-full">
+              <Highlighter className="size-4" /> Add a highlight
+            </ButtonLink>
+          )}
         </div>
 
         {/* right column */}
@@ -76,6 +113,13 @@ export default async function BookPage({ params }: PageProps<"/book/[key]">) {
             {book.genres.map((g) => <Chip key={g} href={`/discover?genre=${encodeURIComponent(g)}`} tone="sage">{g}</Chip>)}
             {book.moods.map((m) => <Chip key={m} href={`/discover?mood=${m}`} tone="rose">{m.replace("-", " ")}</Chip>)}
           </div>
+
+          {/* in-page sections, like tabs on a long page */}
+          <nav aria-label="On this page" className="mt-6 flex flex-wrap gap-x-5 gap-y-1 border-b border-line pb-2 text-sm">
+            <a href="#reviews-h" className="text-ink-soft hover:text-burgundy">Reviews <span className="font-mono text-xs">{allReviews.length}</span></a>
+            <a href="#marginalia" className="text-ink-soft hover:text-burgundy">Marginalia <span className="font-mono text-xs">{marginalia.items.length}{marginalia.nextCursor ? "+" : ""}</span></a>
+            {readers.length > 0 && <a href="#readers" className="text-ink-soft hover:text-burgundy">Readers <span className="font-mono text-xs">{readers.length}</span></a>}
+          </nav>
 
           {/* stats strip */}
           <dl className="mt-8 grid grid-cols-2 gap-px border border-line bg-line sm:grid-cols-4">
@@ -114,10 +158,29 @@ export default async function BookPage({ params }: PageProps<"/book/[key]">) {
             {book.olWorkId && <div><a className="link-underline text-ink" href={`https://openlibrary.org/works/${book.olWorkId}`} target="_blank" rel="noreferrer">Open Library ↗</a></div>}
           </dl>
 
+          {viewer && id && book.slug && (
+            <ReadingJournal book={{ ...book, id, slug: book.slug }} userBook={userBook} reviews={myReviews} quotes={myQuotes} sessions={sessions} />
+          )}
+
           {/* reviews */}
           <section className="mt-14" aria-labelledby="reviews-h">
             <SectionHeading kicker="the margins" title="Reviews" />
             <h2 id="reviews-h" className="sr-only">Reviews</h2>
+            {allReviews.length > 1 && (
+              <nav aria-label="Sort reviews" className="-mt-1 mb-5 flex flex-wrap gap-1">
+                {SORTS.map((s) => (
+                  <Link
+                    key={s.key}
+                    href={s.key === "recent" ? `/book/${book.slug ?? key}#reviews-h` : `/book/${book.slug ?? key}?sort=${s.key}#reviews-h`}
+                    scroll={false}
+                    aria-current={sort === s.key ? "true" : undefined}
+                    className={cn("px-3 py-1 text-sm transition-colors", sort === s.key ? "bg-ink text-paper" : "text-ink-soft hover:bg-paper-deep hover:text-ink")}
+                  >
+                    {s.label}
+                  </Link>
+                ))}
+              </nav>
+            )}
             {reviews.length === 0 ? (
               <div className="border border-dashed border-line-strong p-6 text-center">
                 <p className="font-serif text-xl">No one has reviewed this yet.</p>
@@ -129,14 +192,36 @@ export default async function BookPage({ params }: PageProps<"/book/[key]">) {
             )}
           </section>
 
-          {quotes.length > 0 && (
-            <section className="mt-14">
-              <SectionHeading kicker="underlined" title="Favourite passages" />
-              <div className="masonry columns-1 sm:columns-2">
-                {quotes.map((q) => <Link key={q.id} href={q.postId ? `/post/${q.postId}` : `/quotes/${q.id}`} className="block"><QuoteCard quote={q} linkBook={false} /></Link>)}
+          {/* marginalia */}
+          <section className="mt-14 scroll-mt-24" id="marginalia" aria-labelledby="marginalia-h">
+            <SectionHeading kicker="dog-eared" title="Marginalia" />
+            <h2 id="marginalia-h" className="sr-only">Marginalia</h2>
+            <div className="-mt-1 mb-5 flex flex-wrap items-center justify-between gap-3">
+              <nav aria-label="Sort marginalia" className="flex gap-1">
+                {(["popular", "recent"] as const).map((m) => (
+                  <Link
+                    key={m}
+                    href={`/book/${book.slug ?? key}?${new URLSearchParams({ ...(sort !== "recent" ? { sort } : {}), ...(m === "recent" ? { marks: "recent" } : {}) })}#marginalia`}
+                    scroll={false}
+                    aria-current={msort === m ? "true" : undefined}
+                    className={cn("px-3 py-1 text-sm capitalize transition-colors", msort === m ? "bg-ink text-paper" : "text-ink-soft hover:bg-paper-deep hover:text-ink")}
+                  >
+                    {m}
+                  </Link>
+                ))}
+              </nav>
+              {viewer && <ButtonLink href={`/quotes/new?book=${encodeURIComponent(book.slug ?? book.olWorkId ?? "")}`} size="sm">Add a highlight</ButtonLink>}
+            </div>
+            {marginalia.items.length === 0 ? (
+              <div className="border border-dashed border-line-strong p-6 text-center">
+                <p className="font-serif text-xl">No one has marked a passage in this book yet.</p>
+                <p className="hand text-xl text-ink-soft">the margins are wide open</p>
+                {!viewer && <ButtonLink href={`/login?next=${encodeURIComponent(`/book/${book.slug ?? key}`)}`} variant="paper" className="mt-4">Sign in to add one</ButtonLink>}
               </div>
-            </section>
-          )}
+            ) : (
+              <MarginaliaFeed key={msort} initial={marginalia} query={{ tab: msort, bookId: id }} showBook={false} />
+            )}
+          </section>
 
           {posts.length > 0 && (
             <section className="mt-14">
@@ -152,11 +237,28 @@ export default async function BookPage({ params }: PageProps<"/book/[key]">) {
             </section>
           )}
 
-          {readers.length > 0 && (
+          {readingNow.length > 0 && (
             <section className="mt-14">
-              <SectionHeading kicker="the reading room" title="People who've shelved it" />
+              <SectionHeading kicker="the reading room" title="Reading it now" />
               <ul className="flex flex-wrap gap-3">
-                {readers.map((r) => (
+                {readingNow.map((r) => (
+                  <li key={r.profile.id}>
+                    <Link href={`/u/${r.profile.username}`} className="flex items-center gap-2 rounded-full border border-sage-deep/40 bg-sage/25 py-1 pl-1 pr-3 text-sm hover:border-ink">
+                      <Avatar profile={r.profile} size="xs" />
+                      <span>{r.profile.displayName.split(" ")[0]}</span>
+                      {followingIds.has(r.profile.id) && <span className="meta">following</span>}
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+
+          {shelvedIt.length > 0 && (
+            <section className="mt-14 scroll-mt-24" id="readers">
+              <SectionHeading kicker="in the stacks" title="People who've shelved it" />
+              <ul className="flex flex-wrap gap-3">
+                {shelvedIt.map((r) => (
                   <li key={r.profile.id}>
                     <Link href={`/u/${r.profile.username}`} className={cn("flex items-center gap-2 rounded-full border border-line bg-card py-1 pl-1 pr-3 text-sm hover:border-ink")}>
                       <Avatar profile={r.profile} size="xs" />

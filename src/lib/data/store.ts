@@ -1,4 +1,5 @@
 import type {
+  MarginaliaQuery,
   Book,
   BookInput,
   BookReader,
@@ -102,6 +103,10 @@ export interface DataStore {
   createQuote(input: QuoteInput): Promise<Quote>;
   updateQuote(id: string, input: QuoteInput): Promise<Quote>;
   deleteQuote(id: string): Promise<void>;
+  /** Published annotations as posts (so likes/comments/bookmarks come along), filtered and paged. */
+  listMarginalia(query: MarginaliaQuery, cursor: string | null, limit?: number): Promise<Page<Post>>;
+  /** The most used tags on public annotations, for filters and suggestions. */
+  marginaliaTags(limit?: number): Promise<{ tag: string; count: number }[]>;
 
   // ── lists ──────────────────────────────────────────────────────────
   getList(id: string): Promise<ReadingListDetail | null>;

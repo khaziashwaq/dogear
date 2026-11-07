@@ -1,14 +1,12 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { loadUserPostsAction } from "@/app/actions/social";
-import { BookCover } from "@/components/book/book-cover";
-import { BookTile } from "@/components/book/book-tile";
+import { BookshelfRow } from "@/components/book/bookshelf";
 import { FeedList } from "@/components/feed/feed-list";
 import { Chip } from "@/components/ui/chip";
 import { EmptyState } from "@/components/ui/empty-state";
 import { SectionHeading } from "@/components/ui/section-heading";
 import { getStore, getViewer } from "@/lib/auth";
-import { bookHref } from "@/lib/book-ref";
 import { lookupProfile } from "@/lib/profile-lookup";
 import { ButtonLink } from "@/components/ui/button";
 
@@ -36,13 +34,7 @@ export default async function ProfileOverview({ params }: PageProps<"/u/[usernam
           {favourites.length === 0 ? (
             <p className="text-sm text-ink-soft">{own ? "Heart a book on its page to pin it here." : "No favourites pinned yet."}</p>
           ) : (
-            <div className="grid grid-cols-4 gap-3 sm:gap-6">
-              {favourites.map((b, i) => (
-                <Link key={b.id} href={bookHref(b)} className="group block" style={{ rotate: `${[-1.5, 1, -0.5, 1.5][i]}deg` }}>
-                  <BookCover title={b.title} authors={b.authors} coverUrl={b.coverUrl} size="fill" className="transition-transform group-hover:-translate-y-1" />
-                </Link>
-              ))}
-            </div>
+            <BookshelfRow label="Favourite books" layout="fit" size="lg" fitCount={6} priorityCount={4} items={favourites.map((b) => ({ key: b.id, book: b }))} />
           )}
         </section>
 
@@ -67,7 +59,7 @@ export default async function ProfileOverview({ params }: PageProps<"/u/[usernam
         {reading.length > 0 && (
           <section>
             <SectionHeading title="On the nightstand" />
-            <div className="grid grid-cols-3 gap-3 lg:grid-cols-2">{reading.slice(0, 6).map((ub) => <BookTile key={ub.id} book={ub.book} />)}</div>
+            <BookshelfRow label="On the nightstand" size="sm" items={reading.slice(0, 6).map((ub) => ({ key: ub.id, book: ub.book }))} />
           </section>
         )}
         {profile.favouriteGenres.length > 0 && (

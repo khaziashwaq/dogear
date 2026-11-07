@@ -14,3 +14,13 @@ export function bookHref(book: Pick<Book, "slug" | "olWorkId">) {
   if (book.olWorkId) return `/book/${book.olWorkId}`;
   return "/discover";
 }
+
+/**
+ * The public, shareable page for a review: /u/<username>/reviews/<book-slug>.
+ * A reader may review a book more than once (re-reads); the clean URL shows the
+ * latest, and `pin` adds ?r=<id> to point at a specific one.
+ */
+export function reviewHref(review: { id: string; author: { username: string | null }; book: { slug: string } }, pin = false) {
+  const base = `/u/${review.author.username}/reviews/${review.book.slug}`;
+  return pin ? `${base}?r=${review.id}` : base;
+}

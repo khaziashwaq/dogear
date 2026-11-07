@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { BookCover } from "@/components/book/book-cover";
+import { BookshelfRow } from "@/components/book/bookshelf";
 import { Logo } from "@/components/brand/logo";
 import { DemoBanner } from "@/components/layout/demo-banner";
 import { ListCover } from "@/components/list/list-cover";
@@ -9,9 +10,8 @@ import { ButtonLink } from "@/components/ui/button";
 import { Arrow, Leaf, Sparkle, Squiggle, Underline } from "@/components/ui/doodles";
 import { Stars } from "@/components/ui/stars";
 import { getStore, getViewer } from "@/lib/auth";
-import { bookHref } from "@/lib/book-ref";
 import { MOODS } from "@/lib/data/seed/books";
-import { authorLine, excerpt } from "@/lib/utils";
+import { excerpt } from "@/lib/utils";
 
 export default async function Landing() {
   const [store, viewer] = await Promise.all([getStore(), getViewer()]);
@@ -22,7 +22,7 @@ export default async function Landing() {
   ]);
   const review = reviews[0];
   const quote = quotes[0];
-  const hero = trending.slice(0, 5);
+  const hero = trending.slice(0, 9);
   const shelf = trending.slice(0, 9);
   const list = lists[0];
 
@@ -34,11 +34,11 @@ export default async function Landing() {
         <nav className="flex items-center gap-2 sm:gap-4" aria-label="Site">
           <Link href="/discover" className="hidden text-sm text-ink-soft hover:text-ink sm:inline">Discover</Link>
           {viewer ? (
-            <ButtonLink href="/home" size="sm">Your feed →</ButtonLink>
+            <ButtonLink href="/home" size="sm">Your shelves →</ButtonLink>
           ) : (
             <>
               <Link href="/login" className="text-sm text-ink-soft hover:text-ink">Sign in</Link>
-              <ButtonLink href="/signup" size="sm" variant="burgundy">Join</ButtonLink>
+              <ButtonLink href="/login" size="sm" variant="burgundy">Join</ButtonLink>
             </>
           )}
         </nav>
@@ -62,7 +62,7 @@ export default async function Landing() {
               dogear. is where readers find each other — and their next favourite book.
             </p>
             <div className="mt-8 flex flex-wrap items-center gap-3">
-              <ButtonLink href={viewer ? "/home" : "/signup"} size="lg" variant="burgundy">{viewer ? "Open your feed" : "Start your shelf"}</ButtonLink>
+              <ButtonLink href={viewer ? "/home" : "/login"} size="lg" variant="burgundy">{viewer ? "Open your shelves" : "Start your shelf"}</ButtonLink>
               <ButtonLink href="/discover" size="lg" variant="paper">Wander around</ButtonLink>
             </div>
             <p className="hand mt-6 flex items-center gap-2 text-2xl text-ink-soft">
@@ -73,22 +73,17 @@ export default async function Landing() {
           {/* scrapbook collage */}
           <div className="relative mx-auto h-[420px] w-full max-w-[460px] sm:h-[500px]" aria-label="Books readers love right now">
             <div className="absolute inset-6 rotate-2 border border-line bg-paper-deep shadow-[var(--shadow-paper)]" aria-hidden />
-            {hero.map((b, i) => {
-              const pos = [
-                "left-[4%] top-[6%] -rotate-6",
-                "left-[38%] top-[0%] rotate-3",
-                "right-[2%] top-[22%] rotate-[8deg]",
-                "left-[14%] top-[44%] rotate-2",
-                "left-[48%] top-[50%] -rotate-3",
-              ][i];
-              return (
-                <Link key={b.id} href={bookHref(b)} className={`absolute ${pos} transition-transform duration-300 hover:z-20 hover:-translate-y-2 hover:rotate-0`}>
-                  <BookCover title={b.title} authors={b.authors} coverUrl={b.coverUrl} size="lg" priority={i < 2} />
-                </Link>
-              );
-            })}
+            {/* two little wall shelves pinned to the board */}
+            <div className="absolute inset-x-[9%] top-[7%]">
+              <BookshelfRow label="Trending this month" layout="fit" size="sm" fitCount={5} labels={false} priorityCount={5} items={hero.slice(0, 5).map((b) => ({ key: b.id, book: b }))} />
+            </div>
+            {hero.length > 5 && (
+              <div className="absolute left-[30%] right-[5%] top-[53%]">
+                <BookshelfRow label="More trending books" layout="fit" size="sm" fitCount={5} labels={false} align="center" items={hero.slice(5, 9).map((b) => ({ key: b.id, book: b }))} />
+              </div>
+            )}
             <div className="tape left-[30%] top-[2%] z-10 rotate-[-8deg]" aria-hidden />
-            <div className="tape tape-rose right-[6%] top-[20%] z-10 rotate-12" aria-hidden />
+            <div className="tape tape-rose right-[2%] top-[50%] z-10 rotate-12" aria-hidden />
             <p className="hand absolute -left-2 bottom-2 z-10 max-w-[10rem] -rotate-6 text-2xl leading-none text-burgundy sm:-left-10">
               what everyone&rsquo;s reading this month
             </p>
@@ -97,11 +92,32 @@ export default async function Landing() {
         </section>
 
         {/* ── Mood marquee ─────────────────────────────────── */}
-        <section aria-label="Browse by mood" className="border-y border-ink bg-ink py-3 text-paper">
-          <div className="scrollbar-none flex gap-8 overflow-x-auto whitespace-nowrap px-5">
+        <section aria-label="Browse by mood" className="mood-marquee overflow-hidden border-y border-ink bg-ink py-3 text-paper">
+          <div className="mood-track flex w-max whitespace-nowrap">
             {[...MOODS, ...MOODS].map((m, i) => (
-              <Link key={i} href={`/discover?mood=${m.key}`} className="font-serif text-xl italic hover:text-butter" tabIndex={i >= MOODS.length ? -1 : undefined} aria-hidden={i >= MOODS.length || undefined}>
-                {m.label} <span className="mx-3 not-italic text-rose">✦</span>
+              <Link
+                key={i}
+                href={`/discover?mood=${m.key}`}
+                className="group flex items-center font-serif text-xl italic hover:text-butter focus-visible:text-butter"
+                tabIndex={i >= MOODS.length ? -1 : undefined}
+                aria-hidden={i >= MOODS.length || undefined}
+              >
+                <span className="pl-6">{m.label}</span>
+                {/* a pen-drawn sparkle: outline only, slightly uneven, like a doodle in the margin */}
+                <svg
+                  aria-hidden
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="var(--color-rose)"
+                  strokeWidth="1.4"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="ml-6 size-5 shrink-0 transition-transform duration-300 group-hover:rotate-45 group-hover:scale-110"
+                  style={{ rotate: `${(i % 3) * 9 - 9}deg` }}
+                >
+                  <path d="M12.2 2.6c.4 3.9 1.3 6.6 2.4 7.7 1.2 1.1 3.6 1.7 6.6 1.8-3.2.3-5.6 1-6.7 2.2-1.1 1.2-1.8 3.9-2.1 7.3-.5-3.5-1.3-6-2.5-7.2-1.2-1.2-3.4-1.9-6.3-2.3 3-.1 5.2-.8 6.4-1.9 1.2-1.2 1.9-3.9 2.2-7.6z" />
+                  <path d="M19.4 3.4c.1.9.4 1.5.8 1.8.4.3.9.4 1.6.5-.7.1-1.2.3-1.5.6-.3.4-.5.9-.6 1.7" strokeWidth="1.1" />
+                </svg>
               </Link>
             ))}
           </div>
@@ -114,11 +130,7 @@ export default async function Landing() {
               <p className="meta text-burgundy">01 — shelves</p>
               <h2 className="mt-2 text-4xl sm:text-5xl">A bookshelf you&rsquo;d want to screenshot.</h2>
               <p className="mt-3 max-w-lg text-ink-soft">Want to read, reading, read, did-not-finish, favourites — plus shelves only you would invent. Switch between covers and a tidy list.</p>
-              <div className="mt-8 grid grid-cols-3 gap-3 border-b-8 border-burgundy-deep/80 pb-1 sm:grid-cols-5" aria-hidden>
-                {shelf.slice(0, 5).map((b, i) => (
-                  <BookCover key={b.id} title={b.title} authors={b.authors} coverUrl={b.coverUrl} size="fill" className={i > 2 ? "hidden sm:block" : ""} />
-                ))}
-              </div>
+              <BookshelfRow decorative layout="fit" size="md" fitCount={9} className="mt-8" items={shelf.map((b) => ({ key: b.id, book: b }))} />
             </div>
 
             {review && (
@@ -178,7 +190,7 @@ export default async function Landing() {
               ))}
             </div>
             <div className="mt-12 flex flex-wrap items-center gap-4">
-              <ButtonLink href={viewer ? "/home" : "/signup"} size="lg">{viewer ? "Back to your feed" : "Make your shelf"}</ButtonLink>
+              <ButtonLink href={viewer ? "/home" : "/login"} size="lg">{viewer ? "Back to your shelves" : "Make your shelf"}</ButtonLink>
               <p className="hand text-2xl text-burgundy">your people are already here →</p>
             </div>
           </div>
@@ -187,17 +199,7 @@ export default async function Landing() {
         {trending.length > 0 && (
           <section className="mx-auto max-w-6xl px-5 py-16 sm:px-8" aria-labelledby="trending-heading">
             <h2 id="trending-heading" className="text-3xl">Trending on dogear.</h2>
-            <ul className="scrollbar-none mt-6 flex gap-5 overflow-x-auto pb-4">
-              {trending.map((b) => (
-                <li key={b.id} className="w-32 shrink-0">
-                  <Link href={bookHref(b)} className="group block">
-                    <BookCover title={b.title} authors={b.authors} coverUrl={b.coverUrl} size="fill" className="transition-transform group-hover:-translate-y-1" />
-                    <p className="mt-2 line-clamp-2 font-serif leading-tight group-hover:text-burgundy">{b.title}</p>
-                    <p className="meta truncate normal-case tracking-normal">{authorLine(b.authors)}</p>
-                  </Link>
-                </li>
-              ))}
-            </ul>
+            <BookshelfRow label="Trending on dogear." layout="scroll" size="md" className="mt-6" items={trending.map((b) => ({ key: b.id, book: b }))} />
           </section>
         )}
       </main>

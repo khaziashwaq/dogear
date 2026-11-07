@@ -1,6 +1,7 @@
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type {
+  MarginaliaQuery,
   BookInput,
   BookReader,
   BookStats,
@@ -113,24 +114,32 @@ export class SupabaseStore implements DataStore {
   }
 
   private async hydrateReviews(rows: Row[]): Promise<Review[]> {
-    const posts = await this.postIds("review_id", rows.map((r) => r.id));
+    if (!rows.length) return [];
+    const { data } = await this.sb.from("posts").select("id, review_id, likes_count, comments_count").in("review_id", rows.map((r) => r.id));
+    const posts = new Map<string, Row>((data ?? []).map((p: Row) => [p.review_id as string, p]));
     return rows.map((r) => this.review(r, posts.get(r.id) ?? null));
   }
-  private review(r: Row, postId: string | null): Review {
+  private review(r: Row, post: Row | null): Review {
     return {
       id: r.id, userId: r.user_id, bookId: r.book_id, rating: num(r.rating), title: r.title, body: r.body,
       containsSpoilers: r.contains_spoilers, isReread: r.is_reread, visibility: r.visibility, createdAt: r.created_at,
-      updatedAt: r.updated_at, postId, author: mapProfile(r.author), book: mapBook(r.book),
+      updatedAt: r.updated_at, postId: post?.id ?? null, likesCount: post?.likes_count ?? 0, commentsCount: post?.comments_count ?? 0,
+      author: mapProfile(r.author), book: mapBook(r.book),
     };
   }
   private async hydrateQuotes(rows: Row[]): Promise<Quote[]> {
-    const posts = await this.postIds("quote_id", rows.map((r) => r.id));
+    if (!rows.length) return [];
+    const { data } = await this.sb.from("posts").select("id, quote_id, likes_count, comments_count").in("quote_id", rows.map((r) => r.id));
+    const posts = new Map<string, Row>((data ?? []).map((p: Row) => [p.quote_id as string, p]));
     return rows.map((r) => this.quote(r, posts.get(r.id) ?? null));
   }
-  private quote(r: Row, postId: string | null): Quote {
+  private quote(r: Row, post: Row | null): Quote {
     return {
       id: r.id, userId: r.user_id, bookId: r.book_id, body: r.body, page: r.page, commentary: r.commentary,
-      visibility: r.visibility, createdAt: r.created_at, postId, author: mapProfile(r.author), book: mapBook(r.book),
+      visibility: r.visibility, highlight: r.highlight ?? "butter", tags: r.tags ?? [], isDraft: Boolean(r.is_draft),
+      createdAt: r.created_at, updatedAt: r.updated_at ?? r.created_at,
+      postId: post?.id ?? null, likesCount: post?.likes_count ?? 0, commentsCount: post?.comments_count ?? 0,
+      author: mapProfile(r.author), book: mapBook(r.book),
     };
   }
   private async hydrateLists(rows: Row[]): Promise<ReadingList[]> {
@@ -184,8 +193,8 @@ export class SupabaseStore implements DataStore {
         id: r.id, userId: r.user_id, kind: r.kind, body: r.body, progressPages: r.progress_pages, progressPercent: r.progress_percent,
         visibility: r.visibility, likesCount: r.likes_count, commentsCount: r.comments_count, repostsCount: r.reposts_count,
         createdAt: r.created_at, author: mapProfile(r.author), book: r.book ? mapBook(r.book) : null,
-        review: r.review ? this.review(r.review, r.id) : null,
-        quote: r.quote ? this.quote(r.quote, r.id) : null,
+        review: r.review ? this.review(r.review, r) : null,
+        quote: r.quote ? this.quote(r.quote, r) : null,
         list: r.list ? listById.get(r.list.id) ?? null : null,
         repostOf: r.repost_of_id ? origById.get(r.repost_of_id) ?? null : null,
         viewer: { liked: liked.has(r.id), bookmarked: marked.has(r.id), reposted: reposted.has(r.id) },
@@ -495,7 +504,7 @@ export class SupabaseStore implements DataStore {
       const prev = await this.getUserBook(input.bookId);
       await this.patchUserBook(input.bookId, { rating: normaliseRating(input.rating), status: prev?.status ?? "read" });
     }
-    return this.review(data, post?.id ?? null);
+    return this.review(data, post ?? null);
   }
   async updateReview(id: string, input: ReviewInput) {
     const { data, error } = await this.sb.from("reviews").update(this.reviewRow(input)).eq("id", id).eq("user_id", this.me()).select(REVIEW_SELECT).single();
@@ -515,27 +524,66 @@ export class SupabaseStore implements DataStore {
     return data ? (await this.hydrateQuotes([data]))[0] : null;
   }
   async listQuotesForBook(bookId: string, limit = 20) {
-    const { data } = await this.sb.from("quotes").select(QUOTE_SELECT).eq("book_id", bookId).order("created_at", { ascending: false }).limit(limit);
+    const { data } = await this.sb.from("quotes").select(QUOTE_SELECT).eq("book_id", bookId).eq("is_draft", false).order("created_at", { ascending: false }).limit(limit);
     return this.hydrateQuotes(data ?? []);
   }
   async listQuotesByUser(userId: string, limit = 60) {
     const { data } = await this.sb.from("quotes").select(QUOTE_SELECT).eq("user_id", userId).order("created_at", { ascending: false }).limit(limit);
     return this.hydrateQuotes(data ?? []);
   }
+  private quoteRow(input: QuoteInput) {
+    return {
+      body: input.body, page: input.page, commentary: input.commentary, visibility: input.visibility,
+      highlight: input.highlight, tags: input.tags, is_draft: input.isDraft,
+    };
+  }
   async createQuote(input: QuoteInput) {
     const me = this.me();
-    const { data, error } = await this.sb.from("quotes").insert({
-      user_id: me, book_id: input.bookId, body: input.body, page: input.page, commentary: input.commentary, visibility: input.visibility,
-    }).select(QUOTE_SELECT).single();
-    fail(error, "Couldn't save that quote");
-    const { data: post } = await this.sb.from("posts").insert({ user_id: me, kind: "quote", book_id: input.bookId, quote_id: data.id, visibility: input.visibility }).select("id").single();
-    return this.quote(data, post?.id ?? null);
+    const { data, error } = await this.sb.from("quotes").insert({ user_id: me, book_id: input.bookId, ...this.quoteRow(input) }).select(QUOTE_SELECT).single();
+    fail(error, "Couldn't save that annotation");
+    // Drafts get their post (and with it a place in feeds) when they're published.
+    const post = input.isDraft
+      ? null
+      : (await this.sb.from("posts").insert({ user_id: me, kind: "quote", book_id: input.bookId, quote_id: data.id, visibility: input.visibility }).select("id").single()).data;
+    return this.quote(data, post ?? null);
   }
   async updateQuote(id: string, input: QuoteInput) {
-    const { data, error } = await this.sb.from("quotes").update({ body: input.body, page: input.page, commentary: input.commentary, visibility: input.visibility })
-      .eq("id", id).eq("user_id", this.me()).select(QUOTE_SELECT).single();
-    fail(error, "Couldn't save that quote");
+    const me = this.me();
+    const { data: before } = await this.sb.from("quotes").select("is_draft, book_id").eq("id", id).eq("user_id", me).maybeSingle();
+    if (!before) throw new NotFoundError("Annotation not found");
+    if (input.isDraft && !before.is_draft) throw new ValidationError("A published annotation can't become a draft again.");
+    const publishing = before.is_draft && !input.isDraft;
+    const patch = { ...this.quoteRow(input), ...(publishing ? { created_at: new Date().toISOString() } : {}) };
+    const { data, error } = await this.sb.from("quotes").update(patch).eq("id", id).eq("user_id", me).select(QUOTE_SELECT).single();
+    fail(error, "Couldn't save that annotation");
+    if (publishing) {
+      const { error: postError } = await this.sb.from("posts").insert({ user_id: me, kind: "quote", book_id: before.book_id, quote_id: id, visibility: input.visibility });
+      fail(postError, "Couldn't publish that annotation");
+    }
     return (await this.hydrateQuotes([data]))[0];
+  }
+  async listMarginalia(query: MarginaliaQuery, cursor: string | null, limit = 18) {
+    // Inner joins so filters on the annotation (tags, drafts) and the book (genre) narrow the posts themselves.
+    const select = `*, ${author("posts")}, book:books${query.genre ? "!inner" : ""}(*), quote:quotes!inner(${QUOTE_SELECT})`;
+    let q = this.sb.from("posts").select(select).eq("kind", "quote").is("repost_of_id", null).eq("quote.is_draft", false);
+    if (query.tab === "following") q = q.in("user_id", [this.me(), ...(await this.followingIds())]);
+    else q = q.eq("visibility", "public");
+    if (query.bookId) q = q.eq("book_id", query.bookId);
+    if (query.tag) q = q.contains("quote.tags", [query.tag]);
+    if (query.genre) q = q.contains("book.genres", [query.genre]);
+    if (query.tab !== "popular") return this.pagePosts(q, cursor, limit);
+    const offset = cursor?.startsWith("o:") ? Number(cursor.slice(2)) || 0 : 0;
+    const { data, error } = await q.order("likes_count", { ascending: false }).order("created_at", { ascending: false }).range(offset, offset + limit);
+    fail(error);
+    const rows: Row[] = data ?? [];
+    return { items: await this.hydratePosts(rows.slice(0, limit)), nextCursor: rows.length > limit ? `o:${offset + limit}` : null };
+  }
+  async marginaliaTags(limit = 24) {
+    // Counted from recent public annotations; enough for filters and suggestions without a tags table.
+    const { data } = await this.sb.from("quotes").select("tags").eq("is_draft", false).eq("visibility", "public").neq("tags", "{}").order("created_at", { ascending: false }).limit(500);
+    const counts = new Map<string, number>();
+    for (const r of (data ?? []) as Row[]) for (const t of (r.tags ?? []) as string[]) counts.set(t, (counts.get(t) ?? 0) + 1);
+    return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, limit).map(([tag, count]) => ({ tag, count }));
   }
   async deleteQuote(id: string) {
     const { error } = await this.sb.from("quotes").delete().eq("id", id).eq("user_id", this.me());

@@ -62,7 +62,7 @@ export async function createPostAction(input: z.input<typeof composerSchema> & {
     const store = await getStore();
     const book = input.book ? await resolveBook(store, input.book) : null;
     const post = await store.createPost({ ...data, bookId: book?.id ?? null });
-    revalidatePath("/home");
+    revalidatePath("/activity");
     return post;
   });
 }

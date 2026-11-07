@@ -144,10 +144,19 @@ export interface Review {
   createdAt: string;
   updatedAt: string;
   postId: string | null;
+  /** Social counters, read from the review's post. */
+  likesCount: number;
+  commentsCount: number;
   author: Profile;
   book: SavedBook;
 }
 
+export type HighlightColour = "butter" | "sage" | "rose" | "lavender" | "blue";
+
+/**
+ * An annotation (marginalia): a passage, the reader's thoughts in the margin, a highlight colour and tags.
+ * Stored in `quotes`; its social life (likes, comments, bookmarks) lives on its post. Drafts have no post.
+ */
 export interface Quote {
   id: string;
   userId: string;
@@ -156,10 +165,23 @@ export interface Quote {
   page: string | null;
   commentary: string | null;
   visibility: Visibility;
+  highlight: HighlightColour;
+  tags: string[];
+  isDraft: boolean;
   createdAt: string;
+  updatedAt: string;
   postId: string | null;
+  likesCount: number;
+  commentsCount: number;
   author: Profile;
   book: SavedBook;
+}
+
+export interface MarginaliaQuery {
+  tab: "following" | "popular" | "recent";
+  genre?: string | null;
+  bookId?: string | null;
+  tag?: string | null;
 }
 
 export interface ListBook {
@@ -322,6 +344,9 @@ export interface QuoteInput {
   page: string | null;
   commentary: string | null;
   visibility: Visibility;
+  highlight: HighlightColour;
+  tags: string[];
+  isDraft: boolean;
 }
 
 export interface ListInput {

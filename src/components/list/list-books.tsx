@@ -6,14 +6,14 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 import { addToListAction, removeFromListAction, reorderListAction, toggleListFollowAction, updateListBookAction } from "@/app/actions/content";
-import { BookCover } from "@/components/book/book-cover";
+import { BookshelfRow } from "@/components/book/bookshelf";
 import { BookPicker } from "@/components/book/book-picker";
 import { useViewer } from "@/components/providers/viewer";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/components/ui/toast";
 import { bookHref, bookRef } from "@/lib/book-ref";
 import type { ListBook } from "@/lib/types";
-import { authorLine, cn, tilt } from "@/lib/utils";
+import { authorLine, cn } from "@/lib/utils";
 
 export function FollowListButton({ listId, initial, count }: { listId: string; initial: boolean; count: number }) {
   const { viewer } = useViewer();
@@ -76,9 +76,7 @@ export function ListBooks({ listId, initial, ranked, editable }: { listId: strin
     <div className={cn("group flex gap-4 border-b border-line py-5", editable && "bg-paper")}>
       {editable && <GripVertical className="mt-8 hidden size-5 shrink-0 cursor-grab text-ink-faint sm:block" aria-hidden />}
       {ranked && <span className="w-10 shrink-0 text-right font-serif text-4xl italic leading-none text-burgundy">{i + 1}</span>}
-      <Link href={bookHref(lb.book)} className="shrink-0" draggable={false}>
-        <BookCover title={lb.book.title} authors={lb.book.authors} coverUrl={lb.book.coverUrl} size="md" tilt={tilt(lb.bookId, 1.5)} />
-      </Link>
+      <BookshelfRow layout="ledge" size="sm" className="shrink-0 self-start" items={[{ key: lb.bookId, book: lb.book }]} />
       <div className="min-w-0 flex-1">
         <Link href={bookHref(lb.book)} className="font-serif text-2xl leading-tight hover:text-burgundy" draggable={false}>{lb.book.title}</Link>
         <p className="meta normal-case tracking-normal">{authorLine(lb.book.authors)}{lb.book.publishedYear ? ` · ${lb.book.publishedYear}` : ""}</p>

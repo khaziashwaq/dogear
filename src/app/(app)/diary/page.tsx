@@ -6,9 +6,9 @@ import { ButtonLink } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Stars } from "@/components/ui/stars";
 import { getStore, requireViewer } from "@/lib/auth";
-import { bookHref } from "@/lib/book-ref";
+import { bookHref, reviewHref } from "@/lib/book-ref";
 import type { ReadingSession } from "@/lib/types";
-import { authorLine, cn, formatDate } from "@/lib/utils";
+import { authorLine, cn, excerpt, formatDate } from "@/lib/utils";
 
 export const metadata: Metadata = { title: "Reading diary" };
 
@@ -17,8 +17,14 @@ const STATUS = { finished: { label: "finished", tone: "bg-sage/50" }, reading: {
 export default async function DiaryPage() {
   const viewer = await requireViewer("/diary");
   const store = await getStore();
-  const [sessions, shelf] = await Promise.all([store.listSessions(), store.getShelf(viewer.id, {})]);
+  const [sessions, shelf, reviews] = await Promise.all([store.listSessions(), store.getShelf(viewer.id, {}), store.listReviewsByUser(viewer.id, 200)]);
   const ratings = new Map(shelf.map((u) => [u.bookId, u.rating]));
+  // The review that belongs to a reading: the first one written after it finished (re-reads get their own), else the latest.
+  const reviewFor = (s: ReadingSession) => {
+    const mine = reviews.filter((r) => r.bookId === s.bookId);
+    if (!s.finishedOn) return null;
+    return [...mine].reverse().find((r) => r.createdAt.slice(0, 10) >= s.finishedOn!) ?? (s.isReread ? null : mine[0]) ?? null;
+  };
 
   const groups = new Map<string, ReadingSession[]>();
   for (const s of sessions) {
@@ -63,6 +69,15 @@ export default async function DiaryPage() {
                           {s.status === "finished" && <Stars value={ratings.get(s.bookId) ?? null} size="xs" />}
                         </div>
                         {s.notes && <p className="hand mt-2 text-xl leading-tight text-burgundy">{s.notes}</p>}
+                        {(() => {
+                          const r = reviewFor(s);
+                          return r ? (
+                            <Link href={r.visibility === "public" ? reviewHref(r, true) : r.postId ? `/post/${r.postId}` : bookHref(s.book)} className="group mt-2 block border-l-2 border-burgundy/40 pl-3">
+                              <span className="meta">your review</span>
+                              <span className="block font-serif italic leading-snug group-hover:text-burgundy">{r.title ?? excerpt(r.body, 120)}</span>
+                            </Link>
+                          ) : null;
+                        })()}
                       </div>
                     </div>
                   </li>

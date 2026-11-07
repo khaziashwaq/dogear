@@ -47,11 +47,21 @@ export async function deleteReviewAction(reviewId: string) {
 }
 
 // ── quotes ─────────────────────────────────────────────────────────────
+const tag = z
+  .string()
+  .transform((t) => t.trim().toLowerCase().replace(/^#/, "").replace(/\s+/g, "-").replace(/[^\p{L}\p{N}-]/gu, "").slice(0, 32))
+  .refine((t) => t.length > 0);
 const quoteSchema = z.object({
-  body: z.string().trim().min(1, "Paste the passage you loved.").max(2000),
+  body: z.string().trim().min(1, "Type or paste the passage first.").max(2000),
   page: z.string().trim().max(20).transform((v) => v || null).nullable(),
   commentary: z.string().trim().max(1000).transform((v) => v || null).nullable(),
   visibility,
+  highlight: z.enum(["butter", "sage", "rose", "lavender", "blue"]),
+  tags: z
+    .array(z.string())
+    .max(20)
+    .transform((ts) => [...new Set(ts.map((t) => tag.safeParse(t)).flatMap((r) => (r.success ? [r.data] : [])))].slice(0, 8)),
+  isDraft: z.boolean(),
 });
 
 export async function createQuoteAction(book: BookRefInput, input: z.input<typeof quoteSchema>) {
@@ -68,7 +78,7 @@ export async function updateQuoteAction(quoteId: string, input: z.input<typeof q
   return run(async () => {
     const store = await getStore();
     const existing = await store.getQuote(id.parse(quoteId));
-    if (!existing) throw new Error("Quote not found");
+    if (!existing) throw new Error("That annotation couldn't be found.");
     const quote = await store.updateQuote(quoteId, { ...quoteSchema.parse(input), bookId: existing.bookId });
     revalidatePath("/", "layout");
     return quote;
@@ -166,4 +176,16 @@ export async function myListsAction() {
     if (!store.viewerId) return [];
     return store.listListsByUser(store.viewerId);
   });
+}
+
+// ── marginalia ─────────────────────────────────────────────────────────
+const marginaliaQuery = z.object({
+  tab: z.enum(["following", "popular", "recent"]),
+  genre: z.string().max(60).nullable().optional(),
+  bookId: z.string().max(80).nullable().optional(),
+  tag: z.string().max(40).nullable().optional(),
+});
+
+export async function loadMarginaliaAction(query: z.input<typeof marginaliaQuery>, cursor: string | null) {
+  return run(async () => (await getStore()).listMarginalia(marginaliaQuery.parse(query), z.string().max(200).nullable().parse(cursor)));
 }

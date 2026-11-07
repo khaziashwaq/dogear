@@ -22,7 +22,7 @@ export default async function PostPage({ params }: PageProps<"/post/[id]">) {
   const comments = await store.listComments(target.id);
   return (
     <div className="mx-auto max-w-2xl">
-      <Link href="/home" className="meta hover:text-ink">← back to the feed</Link>
+      <Link href="/activity" className="meta hover:text-ink">← back to activity</Link>
       <div className="mt-4"><PostCard post={target} full /></div>
       {target.list && (
         <Link href={`/lists/${target.list.id}`} className="meta mt-3 inline-block text-burgundy hover:text-ink">Open the full list →</Link>

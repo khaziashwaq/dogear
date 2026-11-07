@@ -3,6 +3,7 @@ import { randomBytes, randomUUID, scryptSync } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type {
+  HighlightColour,
   Accent,
   ListCoverStyle,
   NotificationKind,
@@ -55,6 +56,8 @@ export interface ReviewRow {
 }
 export interface QuoteRow {
   id: string; userId: string; bookId: string; body: string; page: string | null; commentary: string | null; visibility: Visibility; createdAt: string;
+  // Marginalia — optional so demo data saved before annotations existed still loads.
+  highlight?: HighlightColour; tags?: string[]; isDraft?: boolean; updatedAt?: string;
 }
 export interface ListRow {
   id: string; userId: string; title: string; description: string | null; coverStyle: ListCoverStyle; coverImageUrl: string | null;
