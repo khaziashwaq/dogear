@@ -28,7 +28,7 @@ import { useSpineColour } from "./spine-colour";
    make a little room and a shelf label appears underneath.
    ────────────────────────────────────────────────────────────────────────── */
 
-export type ShelfBook = Pick<Book, "id" | "slug" | "olWorkId" | "title" | "authors" | "coverUrl"> & { pageCount?: number | null };
+export type ShelfBook = Pick<Book, "id" | "slug" | "olWorkId" | "title" | "authors" | "coverUrl"> & { pageCount?: number | null; olEditionId?: string | null };
 
 export interface ShelfItem {
   key: string;

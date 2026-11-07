@@ -9,9 +9,10 @@ export function bookRef(book: Book) {
   return { olWorkId: book.olWorkId, fallback };
 }
 
-export function bookHref(book: Pick<Book, "slug" | "olWorkId">) {
+export function bookHref(book: Pick<Book, "slug" | "olWorkId"> & { olEditionId?: string | null }) {
   if (book.slug) return `/book/${book.slug}`;
-  if (book.olWorkId) return `/book/${book.olWorkId}`;
+  // Keep the edition the reader found (e.g. Penguin Classics) rather than the work's first edition.
+  if (book.olWorkId) return `/book/${book.olWorkId}${book.olEditionId ? `?edition=${book.olEditionId}` : ""}`;
   return "/discover";
 }
 

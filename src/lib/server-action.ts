@@ -61,7 +61,7 @@ export async function resolveBook(store: DataStore, raw: BookRefInput): Promise<
   if (!ref.olWorkId) throw new ValidationError("Missing book reference.");
   const existing = await store.getBookByOlWorkId(ref.olWorkId);
   if (existing) return existing;
-  const remote = await getOpenLibraryWork(ref.olWorkId);
+  const remote = await getOpenLibraryWork(ref.olWorkId, ref.fallback?.olEditionId);
   const input = remote ?? (ref.fallback ? { ...ref.fallback, olWorkId: ref.olWorkId } : null);
   if (!input) throw new NotFoundError("Couldn't load that book from Open Library.");
   if (remote && ref.fallback) {

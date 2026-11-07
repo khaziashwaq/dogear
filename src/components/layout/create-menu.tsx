@@ -2,7 +2,6 @@
 
 import { BookHeart, BookPlus, Highlighter, Library, PenLine } from "lucide-react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 import { setShelfStatusAction } from "@/app/actions/books";
 import { BookPicker } from "@/components/book/book-picker";
@@ -22,15 +21,16 @@ export function CreateMenu({ open, onClose }: { open: boolean; onClose: () => vo
   const [picking, setPicking] = useState(false);
   const [, start] = useTransition();
   const toast = useToast();
-  const router = useRouter();
 
   const add = (book: Book) => {
     setPicking(false);
+    // Say so straight away: a book new to dogear is fetched from Open Library first, which takes a moment.
+    toast(`Adding ${book.title} to Want to read…`);
     start(async () => {
       const res = await setShelfStatusAction(bookRef(book), "want_to_read");
       if (!res.ok) return toast(res.error, "error");
       toast(`${res.data.book.title} is on your Want to read shelf`);
-      router.refresh();
+      // The action revalidates the layout, so the page re-renders with the new shelf; no extra refresh needed.
     });
   };
 

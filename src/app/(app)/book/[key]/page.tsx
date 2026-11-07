@@ -19,8 +19,10 @@ import { lookupBook } from "@/lib/book-lookup";
 import { emptyStats } from "@/lib/data/store";
 import { authorLine, cn, plural } from "@/lib/utils";
 
-export async function generateMetadata({ params }: PageProps<"/book/[key]">): Promise<Metadata> {
-  const book = await lookupBook((await params).key);
+const editionParam = (v: unknown) => (typeof v === "string" && /^OL\d+M$/.test(v) ? v : null);
+
+export async function generateMetadata({ params, searchParams }: PageProps<"/book/[key]">): Promise<Metadata> {
+  const book = await lookupBook((await params).key, editionParam((await searchParams).edition));
   if (!book) return { title: "Book not found" };
   return { title: `${book.title} by ${authorLine(book.authors)}`, description: book.description?.slice(0, 160) };
 }
@@ -38,7 +40,7 @@ export default async function BookPage({ params, searchParams }: PageProps<"/boo
   const sp = await searchParams;
   const sort = SORTS.find((s) => s.key === sp.sort)?.key ?? "recent";
   const msort = sp.marks === "recent" ? "recent" : "popular";
-  const book = await lookupBook(key);
+  const book = await lookupBook(key, editionParam(sp.edition));
   if (!book) notFound();
   if (book.slug && key !== book.slug) redirect(`/book/${book.slug}`);
 

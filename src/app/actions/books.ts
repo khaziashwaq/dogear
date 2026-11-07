@@ -92,6 +92,15 @@ export async function deleteSessionAction(sessionId: string) {
   });
 }
 
+/** Book picker, first pass: just our catalogue, which answers in milliseconds while Open Library takes a second or two. */
+export async function searchCatalogueAction(q: string) {
+  return run(async () => {
+    const query = z.string().trim().max(120).parse(q);
+    if (query.length < 2) return [] as Book[];
+    return (await (await getStore()).searchBooks(query, 8)) as Book[];
+  });
+}
+
 /** Book picker search: our catalogue first, then Open Library, de-duplicated. */
 export async function searchBooksAction(q: string) {
   return run(async () => {

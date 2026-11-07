@@ -1,8 +1,8 @@
 "use client";
 
 import { Loader2, Search } from "lucide-react";
-import { useEffect, useRef, useState, useTransition } from "react";
-import { searchBooksAction } from "@/app/actions/books";
+import { useEffect, useRef, useState } from "react";
+import { searchBooksAction, searchCatalogueAction } from "@/app/actions/books";
 import { Dialog } from "@/components/ui/dialog";
 import type { Book } from "@/lib/types";
 import { authorLine } from "@/lib/utils";
@@ -13,8 +13,10 @@ export function BookPicker({ open, onClose, onPick, title = "Find a book", sugge
   const [q, setQ] = useState("");
   const [results, setResults] = useState<Book[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [pending, start] = useTransition();
+  const [pending, setPending] = useState(false);
   const input = useRef<HTMLInputElement>(null);
+  // Only the latest query may write results: a slow Open Library answer for "brot" must not replace "brothers".
+  const latest = useRef(0);
 
   useEffect(() => {
     if (open) setTimeout(() => input.current?.focus(), 50);
@@ -22,15 +24,23 @@ export function BookPicker({ open, onClose, onPick, title = "Find a book", sugge
 
   useEffect(() => {
     if (q.trim().length < 2) return;
-    const t = setTimeout(() => {
-      start(async () => {
-        const res = await searchBooksAction(q);
-        if (res.ok) {
-          setResults(res.data);
-          setError(null);
-        } else setError(res.error);
+    const t = setTimeout(async () => {
+      const id = ++latest.current;
+      let full = false;
+      setPending(true);
+      // Our own catalogue first (instant), then the full list once Open Library answers.
+      searchCatalogueAction(q).then((res) => {
+        if (id === latest.current && !full && res.ok) setResults(res.data);
       });
-    }, 300);
+      const res = await searchBooksAction(q);
+      full = true;
+      if (id !== latest.current) return;
+      setPending(false);
+      if (res.ok) {
+        setResults(res.data);
+        setError(null);
+      } else setError(res.error);
+    }, 250);
     return () => clearTimeout(t);
   }, [q]);
 
@@ -59,6 +69,9 @@ export function BookPicker({ open, onClose, onPick, title = "Find a book", sugge
             </button>
           </li>
         ))}
+        {q.trim().length >= 2 && pending && (
+          <li className="meta py-3 text-center normal-case tracking-normal" aria-live="polite">Searching Open Library…</li>
+        )}
         {q.trim().length >= 2 && results && results.length === 0 && !pending && (
           <li className="py-6 text-center text-sm text-ink-soft">No books found for “{q}”. Try the author&rsquo;s surname or an ISBN.</li>
         )}

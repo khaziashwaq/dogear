@@ -1,6 +1,6 @@
 import "server-only";
 import type { Book, BookInput } from "@/lib/types";
-import { coverFromId, coverFromIsbn } from "@/lib/utils";
+import { coverFromId } from "@/lib/utils";
 
 // Open Library API — https://openlibrary.org/developers/api
 // All calls are server-side, cached for an hour, and time out quickly so a slow
@@ -58,25 +58,30 @@ interface SearchDoc {
   subject?: string[];
   publisher?: string[];
   cover_edition_key?: string;
+  /** With `lang=en`, the edition that best matches the query (e.g. an English Penguin Classics printing). */
+  editions?: { docs?: { key?: string; title?: string; cover_i?: number; publisher?: string[] }[] };
 }
 
 function docToBook(d: SearchDoc): Book {
+  const ed = d.editions?.docs?.[0];
   const isbn13 = d.isbn?.find((i) => /^97[89]\d{10}$/.test(i)) ?? null;
   const isbn10 = d.isbn?.find((i) => /^\d{9}[\dX]$/.test(i)) ?? null;
+  // Only Open Library's own cover ids: an ISBN cover URL is a guess, and for most obscure editions it 404s.
   return {
     id: null,
     slug: null,
-    title: d.title,
-    subtitle: d.subtitle ?? null,
+    // A work's own record is often its first edition (Russian for Dostoevsky); show the matching English edition.
+    title: ed?.title ?? d.title,
+    subtitle: ed?.title ? null : d.subtitle ?? null,
     authors: d.author_name?.slice(0, 4) ?? [],
     description: null,
-    coverUrl: d.cover_i ? coverFromId(d.cover_i) : isbn13 ? coverFromIsbn(isbn13) : null,
+    coverUrl: ed?.cover_i ? coverFromId(ed.cover_i) : d.cover_i ? coverFromId(d.cover_i) : null,
     isbn13,
     isbn10,
     olWorkId: d.key.replace("/works/", ""),
-    olEditionId: d.cover_edition_key ?? null,
+    olEditionId: ed?.key?.match(/OL\d+M/)?.[0] ?? d.cover_edition_key ?? null,
     publishedYear: d.first_publish_year ?? null,
-    publisher: d.publisher?.[0] ?? null,
+    publisher: ed?.publisher?.[0] ?? d.publisher?.[0] ?? null,
     pageCount: d.number_of_pages_median ?? null,
     language: null,
     genres: subjectsToGenres(d.subject),
@@ -84,12 +89,15 @@ function docToBook(d: SearchDoc): Book {
   };
 }
 
-const FIELDS = "key,title,subtitle,author_name,first_publish_year,cover_i,isbn,number_of_pages_median,subject,publisher,cover_edition_key";
+// Search asks only for what a result row shows. ISBNs and subjects (hundreds per popular work) made each
+// response ~8× larger; they're fetched once, when a book is actually added (see getOpenLibraryWork).
+const FIELDS =
+  "key,title,subtitle,author_name,first_publish_year,cover_i,number_of_pages_median,cover_edition_key,editions,editions.key,editions.title,editions.cover_i,editions.publisher";
 
 export async function searchOpenLibrary(q: string, limit = 20): Promise<Book[]> {
   if (!q.trim()) return [];
   const data = await getJson<{ docs: SearchDoc[] }>(
-    `/search.json?q=${encodeURIComponent(q)}&limit=${limit}&fields=${FIELDS}`,
+    `/search.json?q=${encodeURIComponent(q)}&limit=${limit}&lang=en&fields=${FIELDS}`,
   );
   return (data?.docs ?? []).filter((d) => d.key?.startsWith("/works/")).map(docToBook);
 }
@@ -116,39 +124,69 @@ interface WorkJson {
   authors?: { author: { key: string } }[];
   first_publish_date?: string;
 }
-interface EditionsJson {
-  entries: { isbn_13?: string[]; isbn_10?: string[]; number_of_pages?: number; publishers?: string[]; publish_date?: string; key: string; languages?: { key: string }[] }[];
+/** Full details for a work, used when someone adds or opens a book that isn't in our catalogue yet. */
+interface EditionJson {
+  title?: string;
+  subtitle?: string;
+  covers?: number[];
+  publishers?: string[];
+  number_of_pages?: number;
+  isbn_13?: string[];
+  isbn_10?: string[];
+  works?: { key: string }[];
+  languages?: { key: string }[];
 }
 
-/** Full details for a work, used when someone opens a book that isn't in our catalogue yet. */
-export async function getOpenLibraryWork(olWorkId: string): Promise<BookInput | null> {
+/**
+ * Full details for a work, used when someone adds or opens a book that isn't in our catalogue yet.
+ * `olEditionId` is the edition the reader picked in search (say, Penguin Classics): its title, cover,
+ * publisher, pages and ISBN win over the work's, which often describe the first, untranslated edition.
+ */
+export async function getOpenLibraryWork(olWorkId: string, olEditionId?: string | null): Promise<BookInput | null> {
   if (!/^OL\d+W$/.test(olWorkId)) return null;
-  const [work, editions] = await Promise.all([
+  const editionId = olEditionId && /^OL\d+M$/.test(olEditionId) ? olEditionId : null;
+  // One round trip: the work record (description, subjects, covers) alongside the search index's summary of
+  // the same work (author names, page count, ISBNs, publisher), instead of work → editions → each author.
+  const [work, indexed, edition] = await Promise.all([
     getJson<WorkJson>(`/works/${olWorkId}.json`, 86_400),
-    getJson<EditionsJson>(`/works/${olWorkId}/editions.json?limit=8`, 86_400),
+    getJson<{ docs: (SearchDoc & { language?: string[] })[] }>(
+      `/search.json?q=${encodeURIComponent(`key:/works/${olWorkId}`)}&limit=1&fields=key,author_name,cover_i,number_of_pages_median,isbn,publisher,first_publish_year,cover_edition_key,language`,
+      86_400,
+    ),
+    editionId ? getJson<EditionJson>(`/books/${editionId}.json`, 86_400) : Promise.resolve(null),
   ]);
   if (!work) return null;
-  const authorNames = await Promise.all(
-    (work.authors ?? []).slice(0, 3).map(async (a) => (await getJson<{ name: string }>(`${a.author.key}.json`, 86_400))?.name),
-  );
-  const ed = editions?.entries.find((e) => e.isbn_13?.length) ?? editions?.entries[0];
-  const isbn13 = ed?.isbn_13?.find((i) => /^97[89]\d{10}$/.test(i)) ?? null;
+  // Ignore an edition that belongs to some other work.
+  const ed = edition?.works?.some((w) => w.key === `/works/${olWorkId}`) ? edition : null;
+  const doc = indexed?.docs?.[0];
+  let authors = doc?.author_name?.slice(0, 3) ?? [];
+  if (!authors.length) {
+    // The search index can lag behind a newly added work; fall back to the author records.
+    const names = await Promise.all(
+      (work.authors ?? []).slice(0, 3).map(async (a) => (await getJson<{ name: string }>(`${a.author.key}.json`, 86_400))?.name),
+    );
+    authors = names.filter(Boolean) as string[];
+  }
+  const isbn13 = [...(ed?.isbn_13 ?? []), ...(doc?.isbn ?? [])].find((i) => /^97[89]\d{10}$/.test(i)) ?? null;
+  const isbn10 = [...(ed?.isbn_10 ?? []), ...(doc?.isbn ?? [])].find((i) => /^\d{9}[\dX]$/.test(i)) ?? null;
   const description = typeof work.description === "string" ? work.description : work.description?.value ?? null;
-  const year = Number((work.first_publish_date ?? ed?.publish_date ?? "").match(/\d{4}/)?.[0]) || null;
+  const year = doc?.first_publish_year ?? (Number((work.first_publish_date ?? "").match(/\d{4}/)?.[0]) || null);
+  const coverId = ed?.covers?.find((c) => c > 0) ?? work.covers?.find((c) => c > 0) ?? doc?.cover_i;
+  const pages = ed?.number_of_pages ?? doc?.number_of_pages_median;
   return {
-    title: work.title,
-    subtitle: work.subtitle ?? null,
-    authors: authorNames.filter(Boolean) as string[],
+    title: ed?.title ?? work.title,
+    subtitle: ed ? ed.subtitle ?? null : work.subtitle ?? null,
+    authors,
     description: description ? cleanDescription(description) : null,
-    coverUrl: work.covers?.find((c) => c > 0) ? coverFromId(work.covers.find((c) => c > 0)!) : isbn13 ? coverFromIsbn(isbn13) : null,
+    coverUrl: coverId ? coverFromId(coverId) : null,
     isbn13,
-    isbn10: ed?.isbn_10?.[0] && /^\d{9}[\dX]$/.test(ed.isbn_10[0]) ? ed.isbn_10[0] : null,
+    isbn10,
     olWorkId,
-    olEditionId: ed?.key?.replace("/books/", "").match(/^OL\d+M$/)?.[0] ?? null,
+    olEditionId: ed ? editionId : doc?.cover_edition_key?.match(/^OL\d+M$/)?.[0] ?? null,
     publishedYear: year,
-    publisher: ed?.publishers?.[0] ?? null,
-    pageCount: ed?.number_of_pages && ed.number_of_pages > 0 && ed.number_of_pages < 20000 ? ed.number_of_pages : null,
-    language: ed?.languages?.[0]?.key === "/languages/eng" ? "English" : null,
+    publisher: ed?.publishers?.[0] ?? doc?.publisher?.[0] ?? null,
+    pageCount: pages && pages > 0 && pages < 20000 ? pages : null,
+    language: ed ? (ed.languages?.[0]?.key === "/languages/eng" ? "English" : null) : doc?.language?.[0] === "eng" ? "English" : null,
     genres: subjectsToGenres(work.subjects),
     moods: [],
   };
