@@ -18,13 +18,34 @@ export async function ensureBookAction(ref: BookRefInput) {
   return run(async () => resolveBook(await getStore(), ref));
 }
 
-export async function setShelfStatusAction(ref: BookRefInput, value: ShelfStatus | null) {
+const moveOptions = z
+  .object({
+    reread: z.boolean().optional(),
+    share: z.boolean().optional(),
+    visibility: z.enum(["public", "followers", "private"]).optional(),
+    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+  })
+  .default({});
+
+/** Move a book between shelves. Never posts unless `share` is set; returns an undo record for a few minutes. */
+export async function setShelfStatusAction(ref: BookRefInput, value: ShelfStatus | null, opts?: z.input<typeof moveOptions>) {
   return run(async () => {
     const store = await getStore();
     const book = await resolveBook(store, ref);
-    const ub = await store.setShelfStatus(book.id, status.parse(value));
+    const move = await store.setShelfStatus(book.id, status.parse(value), moveOptions.parse(opts));
     touch(book.slug);
-    return { book, userBook: ub };
+    return { book, ...move };
+  });
+}
+
+/** Put a recent shelf move back. The record only ever reaches the caller's own rows. */
+export async function undoShelfMoveAction(undo: Record<string, unknown>) {
+  return run(async () => {
+    const store = await getStore();
+    const record = z.record(z.string(), z.unknown()).refine((r) => typeof r.book_id === "string", "Nothing to undo").parse(undo);
+    const userBook = await store.undoShelfMove(record);
+    revalidatePath("/", "layout");
+    return { userBook };
   });
 }
 

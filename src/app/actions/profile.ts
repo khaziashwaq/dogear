@@ -5,6 +5,7 @@ import { z } from "zod";
 import { getStore } from "@/lib/auth";
 import { run } from "@/lib/server-action";
 import { USERNAME_RE } from "@/lib/utils";
+import { imageUrl } from "@/lib/validation";
 import { ValidationError } from "@/lib/data/store";
 import { isSupabaseConfigured } from "@/lib/env";
 
@@ -55,14 +56,20 @@ const profileSchema = z.object({
   bio: z.string().trim().max(280),
   pronouns: z.string().trim().max(30).transform((v) => v || null),
   location: z.string().trim().max(60).transform((v) => v || null),
-  website: z.string().trim().max(200).refine((v) => !v || /^https?:\/\//.test(v), "Websites should start with https://").transform((v) => v || null),
+  website: z
+    .string()
+    .trim()
+    .max(200)
+    .refine((v) => !v || /^https:\/\/[A-Za-z0-9.-]+\.[A-Za-z]{2,}(:\d+)?([/?#]\S*)?$/.test(v), "Use a full https:// address.")
+    .transform((v) => v || null),
   accent: z.enum(["burgundy", "sage", "rose", "butter", "ink"]),
   motif: z.enum(["dogear", "stars", "botanical", "stripes", "none"]),
   favouriteGenres: z.array(z.string().max(40)).max(15),
   favouriteAuthors: z.array(z.string().trim().min(1).max(80)).max(12),
   readingGoal: z.number().int().min(1).max(1000).nullable(),
-  avatarUrl: z.string().max(500).nullable(),
-  coverUrl: z.string().max(500).nullable(),
+  // Only images uploaded here (or the Google photo for avatars); the database enforces the same rule.
+  avatarUrl: imageUrl({ allowGoogle: true }),
+  coverUrl: imageUrl(),
 });
 
 export async function updateProfileAction(input: z.input<typeof profileSchema>) {
@@ -101,5 +108,19 @@ export async function uploadImageAction(form: FormData) {
     }
     const { saveDemoUpload } = await import("@/lib/data/demo/uploads");
     return saveDemoUpload(store.viewerId, name, bytes);
+  });
+}
+
+/** Permanently delete the signed-in account. The reader must type their username to confirm. */
+export async function deleteAccountAction(confirmUsername: string) {
+  return run(async () => {
+    const store = await getStore();
+    if (!store.viewerId) throw new ValidationError("Sign in first.");
+    const me = await store.getProfileById(store.viewerId);
+    const typed = z.string().trim().toLowerCase().parse(confirmUsername);
+    if (!me?.username || typed !== me.username.toLowerCase()) throw new ValidationError("Type your username exactly to confirm.");
+    await store.deleteMyAccount();
+    const { signOutAction } = await import("@/app/actions/auth");
+    await signOutAction();
   });
 }

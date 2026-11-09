@@ -4,7 +4,8 @@ import { Eye, Lock, MoreHorizontal, Repeat2, Users } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
-import { deletePostAction } from "@/app/actions/social";
+import { deletePostAction, setMutedAction } from "@/app/actions/social";
+import { ReportDialog } from "@/components/safety/report-dialog";
 import { BookCover } from "@/components/book/book-cover";
 import { ListCover } from "@/components/list/list-cover";
 import { Avatar } from "@/components/profile/avatar";
@@ -39,8 +40,10 @@ function VisibilityBadge({ v }: { v: Post["visibility"] }) {
   );
 }
 
-function PostMenu({ post }: { post: Post }) {
+/** ⋯ on a post: edit / delete your own; report or mute the author on anyone else's. */
+function PostMenu({ post, own }: { post: Post; own: boolean }) {
   const [open, setOpen] = useState(false);
+  const [reporting, setReporting] = useState(false);
   const [pending, start] = useTransition();
   const toast = useToast();
   const router = useRouter();
@@ -50,7 +53,38 @@ function PostMenu({ post }: { post: Post }) {
       <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} aria-haspopup="menu" aria-label="Post options" className="rounded-full p-1.5 text-ink-faint hover:bg-paper-deep hover:text-ink">
         <MoreHorizontal className="size-4" />
       </button>
-      {open && (
+      {open && !own && (
+        <div role="menu" className="absolute right-0 top-8 z-20 w-48 border border-line-strong bg-card py-1 text-sm shadow-[var(--shadow-lift)]" onMouseLeave={() => setOpen(false)}>
+          <button
+            role="menuitem"
+            type="button"
+            disabled={pending}
+            className="block w-full px-4 py-2 text-left hover:bg-paper-deep"
+            onClick={() =>
+              start(async () => {
+                const res = await setMutedAction(post.userId, true);
+                setOpen(false);
+                if (!res.ok) return toast(res.error, "error");
+                toast(`Muted ${post.author.displayName.split(" ")[0]}. Their posts won't show in your feeds.`);
+                router.refresh();
+              })
+            }
+          >
+            Mute {post.author.displayName.split(" ")[0]}
+          </button>
+          <button role="menuitem" type="button" className="block w-full px-4 py-2 text-left text-burgundy hover:bg-paper-deep" onClick={() => (setOpen(false), setReporting(true))}>
+            Report
+          </button>
+        </div>
+      )}
+      <ReportDialog
+        open={reporting}
+        onClose={() => setReporting(false)}
+        targetType={post.review ? "review" : post.quote ? "quote" : post.list ? "list" : "post"}
+        targetId={post.review?.id ?? post.quote?.id ?? post.list?.id ?? post.id}
+        what={post.review ? "this review" : post.quote ? "this annotation" : post.list ? "this list" : "this post"}
+      />
+      {open && own && (
         <div role="menu" className="absolute right-0 top-8 z-20 w-44 border border-line-strong bg-card py-1 text-sm shadow-[var(--shadow-lift)]" onMouseLeave={() => setOpen(false)}>
           {editHref && (
             <Link role="menuitem" href={editHref} className="block px-4 py-2 hover:bg-paper-deep">Edit</Link>
@@ -159,7 +193,7 @@ export function PostCard({ post, nested = false, full = false }: { post: Post; n
               {!own && <FollowButton userId={post.author.id} name={post.author.displayName} variant="text" className="uppercase tracking-[0.08em]" />}
             </p>
           </div>
-          {own && <PostMenu post={post} />}
+          {viewer && <PostMenu post={post} own={own} />}
         </header>
 
         {/* body */}

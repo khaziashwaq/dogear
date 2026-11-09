@@ -19,13 +19,18 @@ import type {
   ReadingListDetail,
   ReadingSession,
   Recommendation,
+  Relationship,
+  ReportInput,
   Review,
   ReviewInput,
   SavedBook,
   SessionInput,
+  ShelfMove,
+  ShelfMoveOptions,
   ShelfQuery,
   ShelfStatus,
   ShelfSummary,
+  ShelfUndo,
   UpdatePostInput,
   UserBook,
 } from "@/lib/types";
@@ -74,7 +79,10 @@ export interface DataStore {
 
   // ── shelves ────────────────────────────────────────────────────────
   getUserBook(bookId: string): Promise<UserBook | null>;
-  setShelfStatus(bookId: string, status: ShelfStatus | null): Promise<UserBook | null>;
+  /** Atomic: the shelf entry, the reading diary and (only with `share`) a feed post. */
+  setShelfStatus(bookId: string, status: ShelfStatus | null, opts?: ShelfMoveOptions): Promise<ShelfMove>;
+  /** Put back what a recent move changed (within 15 minutes). */
+  undoShelfMove(undo: ShelfUndo): Promise<UserBook | null>;
   setRating(bookId: string, rating: number | null): Promise<UserBook>;
   setFavourite(bookId: string, favourite: boolean): Promise<UserBook>;
   setCustomShelves(bookId: string, shelves: string[]): Promise<UserBook>;
@@ -151,6 +159,20 @@ export interface DataStore {
   sendRecommendation(recipientId: string, bookId: string, message: string | null, parentId: string | null): Promise<Recommendation>;
   listRecommendationsReceived(limit?: number): Promise<Recommendation[]>;
 
+  // ── safety & your data ─────────────────────────────────────────────
+  relationship(targetId: string): Promise<Relationship>;
+  block(targetId: string): Promise<void>;
+  unblock(targetId: string): Promise<void>;
+  mute(targetId: string): Promise<void>;
+  unmute(targetId: string): Promise<void>;
+  listBlocked(): Promise<Profile[]>;
+  listMuted(): Promise<Profile[]>;
+  report(input: ReportInput): Promise<void>;
+  /** Everything the signed-in reader has created, for download. */
+  exportMyData(): Promise<Record<string, unknown>>;
+  /** Permanently delete the signed-in reader's account, content and uploads. */
+  deleteMyAccount(): Promise<void>;
+
   // ── stats & signature features ─────────────────────────────────────
   getProfileStats(userId: string, year: number): Promise<ProfileStats>;
   compatibility(otherId: string): Promise<Compatibility | null>;
@@ -167,6 +189,14 @@ export class NotFoundError extends Error {
   constructor(message = "That couldn't be found.") {
     super(message);
     this.name = "NotFoundError";
+  }
+}
+
+/** Too many writes in a short time (database rate limits). */
+export class RateLimitError extends Error {
+  constructor(message = "You're doing that a lot. Give it a little while and try again.") {
+    super(message);
+    this.name = "RateLimitError";
   }
 }
 

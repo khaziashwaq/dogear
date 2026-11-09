@@ -47,10 +47,18 @@ Counters (`likes_count`, `followers_count`, …) are denormalised and maintained
 - RLS is enabled on every table. Policies wrap `auth.uid()` in a sub-select so it's evaluated once per statement.
 - `private.can_view(owner, visibility)` is the single visibility rule (public, owner, or followers-only for followers). It's `SECURITY DEFINER` in a non-exposed schema.
 - Bookmarks, the diary and passes are private to their owners. Notifications are recipient-only.
-- Storage: one public `media` bucket. Writes are limited to `<auth.uid()>/…`.
-- Only the anon key is used. No service-role key exists anywhere in the app.
+- `private.can_view` also hides everything between readers who have blocked each other (`blocks`). Mutes (`mutes`) only drop someone from the viewer's feeds. Reports (`reports`) are private to the reporter; moderators use the service role.
+- Storage: one public `media` bucket limited to 2 MB JPEG/PNG/WebP/GIF. Writes only to `<auth.uid()>/<file>.<image ext>`.
+- The shared `books` catalogue is read-only to the API roles. The server writes it with the service role (`src/lib/supabase/admin.ts`, server-only) from Open Library data it fetched itself. The service role is also used for account deletion, and for nothing else.
+- Column grants make ownership and parent references immutable: recommendations (only `seen_at`), notifications (`read_at`), comments (`body`), reviews and annotations (content and visibility, never `book_id`). A trigger keeps a post's visibility and book in step with the review, annotation or list it carries, and refuses a post wrapping someone else's content.
+- URL columns are checked by the database: HTTPS only, images from our storage (or the Google photo for avatars), covers from Open Library.
+- Abuse limits are database triggers (SQLSTATE `DG429`): comments, follows, passes, reports and automatic posts. Like, follow, repost and list-follow notifications are unique per actor and target.
+- Shelf moves are one function (`set_shelf_status`): shelf entry, diary and an optional post in one transaction. They never post unless asked, and return an undo record (`undo_shelf_move`, 15 minutes).
+- Feeds come from `following_posts()`, `discover_posts()` and `public_posts()`, which join follows and mutes in the database, so no ID lists travel in URLs.
+- Production fails closed: `src/instrumentation.ts` refuses to start without Supabase and the service-role key, and sample-data mode only exists in development.
+- `src/proxy.ts` sets a per-request nonce CSP (`strict-dynamic`). `next.config.ts` sets nosniff, `X-Frame-Options`, Referrer-Policy, Permissions-Policy and HSTS (production).
 - Server actions validate every input with zod. Redirect targets (`next=`) are restricted to same-origin paths. Uploads are type- and size-checked (2 MB).
-- `supabase/tests/rls_smoke.sql` checks visibility tiers, impersonation, counter tampering, cross-user edits, notification privacy and visibility sync.
+- Tests: `npm test` runs `tests/db` (every migration applied to PGlite, a real Postgres, then RLS, grants and triggers exercised as `anon` and `authenticated`) and `tests/store` (the local store held to the same rules). `supabase/tests/rls_smoke.sql` is the older psql smoke test.
 
 ## Front end
 

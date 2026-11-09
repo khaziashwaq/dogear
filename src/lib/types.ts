@@ -323,6 +323,40 @@ export interface ShelfQuery {
   sort?: ShelfSort;
 }
 
+/** How a shelf move should behave beyond changing the shelf. */
+export interface ShelfMoveOptions {
+  /** Read → Reading as a deliberate re-read (a new diary entry), not "not finished after all". */
+  reread?: boolean;
+  /** Post "started" / "finished" to the feed. Off unless the reader asks. */
+  share?: boolean;
+  visibility?: Visibility;
+  /** Day it happened (YYYY-MM-DD); defaults to today. */
+  date?: string | null;
+}
+/** Opaque record of what a move changed, handed back to undo it for a few minutes. */
+export type ShelfUndo = Record<string, unknown>;
+export interface ShelfMove {
+  userBook: UserBook | null;
+  changed: boolean;
+  undo: ShelfUndo | null;
+}
+
+/** The viewer's relationship to another reader. */
+export interface Relationship {
+  following: boolean;
+  blocked: boolean;
+  muted: boolean;
+}
+
+export type ReportTarget = "profile" | "post" | "comment" | "review" | "quote" | "list";
+export type ReportReason = "spam" | "harassment" | "hate" | "sexual" | "spoilers" | "other";
+export interface ReportInput {
+  targetType: ReportTarget;
+  targetId: string;
+  reason: ReportReason;
+  details: string | null;
+}
+
 export interface ShelfSummary {
   counts: Record<ShelfStatus | "favourites", number>;
   custom: { name: string; count: number }[];

@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 import { addCommentAction, deleteCommentAction } from "@/app/actions/social";
 import { Avatar } from "@/components/profile/avatar";
+import { ReportDialog } from "@/components/safety/report-dialog";
 import { useViewer } from "@/components/providers/viewer";
 import { Button, buttonClass } from "@/components/ui/button";
 import { useToast } from "@/components/ui/toast";
@@ -40,6 +41,7 @@ export function CommentThread({ postId, postOwnerId, initial }: { postId: string
   const { viewer } = useViewer();
   const [comments, setComments] = useState(initial);
   const [replyTo, setReplyTo] = useState<string | null>(null);
+  const [reporting, setReporting] = useState<Comment | null>(null);
   const [, start] = useTransition();
   const toast = useToast();
   const router = useRouter();
@@ -66,6 +68,7 @@ export function CommentThread({ postId, postOwnerId, initial }: { postId: string
         <div className="mt-1 flex gap-3">
           {viewer && !isReply && <button type="button" onClick={() => setReplyTo(replyTo === c.id ? null : c.id)} className="meta hover:text-ink">reply</button>}
           {viewer && (viewer.id === c.userId || viewer.id === postOwnerId) && <button type="button" onClick={() => remove(c)} className="meta hover:text-burgundy">delete</button>}
+          {viewer && viewer.id !== c.userId && <button type="button" onClick={() => setReporting(c)} className="meta hover:text-burgundy">report</button>}
         </div>
         {!isReply && (c.replies.length > 0 || replyTo === c.id) && (
           <ul className="border-l border-line pl-4">
@@ -105,6 +108,9 @@ export function CommentThread({ postId, postOwnerId, initial }: { postId: string
         <p className="hand mt-6 text-2xl text-ink-faint">no comments yet — start the conversation</p>
       ) : (
         <ul className="mt-6 space-y-6">{comments.map((c) => <Item key={c.id} c={c} />)}</ul>
+      )}
+      {reporting && (
+        <ReportDialog open onClose={() => setReporting(null)} targetType="comment" targetId={reporting.id} what={`${reporting.author.displayName.split(" ")[0]}'s comment`} />
       )}
     </section>
   );

@@ -19,19 +19,25 @@ import type {
   ReadingListDetail,
   ReadingSession,
   Recommendation,
+  Relationship,
+  ReportInput,
   Review,
   ReviewInput,
   SavedBook,
   SessionInput,
+  ShelfMove,
+  ShelfMoveOptions,
   ShelfQuery,
   ShelfStatus,
   ShelfSummary,
+  ShelfUndo,
   UpdatePostInput,
   UserBook,
   Visibility,
 } from "@/lib/types";
 import { normaliseRating, slugify } from "@/lib/utils";
 import { AuthError, NotFoundError, ValidationError, computeHistogram, type DataStore } from "../store";
+import { removeDemoUploads } from "./uploads";
 import { buildStats, cleanShelves, compatibilityScore, sortShelf } from "../shared";
 import {
   getDemoDB,
@@ -44,6 +50,7 @@ import {
   type PostRow,
   type QuoteRow,
   type ReviewRow,
+  type SessionRow,
   type UserBookRow,
 } from "./db";
 
@@ -83,11 +90,20 @@ export class DemoStore implements DataStore {
   private follows(a: string, b: string) {
     return this.db.follows.some((f) => f.followerId === a && f.followingId === b);
   }
+  /** Same rule as private.can_view: owner, else not blocked either way, then public / followers. */
   private canView(ownerId: string, vis: Visibility) {
+    if (this.viewerId && ownerId === this.viewerId) return true;
+    if (this.blockedBetween(ownerId, this.viewerId)) return false;
     if (vis === "public") return true;
     if (!this.viewerId) return false;
-    if (ownerId === this.viewerId) return true;
     return vis === "followers" && this.follows(this.viewerId, ownerId);
+  }
+  private blockedBetween(a: string | null, b: string | null) {
+    if (!a || !b) return false;
+    return (this.db.blocks ??= []).some((x) => (x.blockerId === a && x.blockedId === b) || (x.blockerId === b && x.blockedId === a));
+  }
+  private mutedByViewer(userId: string) {
+    return Boolean(this.viewerId && (this.db.mutes ??= []).some((m) => m.muterId === this.viewerId && m.mutedId === userId));
   }
 
   private profile(id: string): Profile {
@@ -254,6 +270,7 @@ export class DemoStore implements DataStore {
     const me = this.me();
     if (me === targetId || this.follows(me, targetId)) return;
     this.profile(targetId);
+    if (this.blockedBetween(me, targetId)) throw new AuthError("You can't follow this reader.");
     this.db.follows.push({ followerId: me, followingId: targetId, createdAt: nowIso() });
     pushNotification(this.db, { recipientId: targetId, actorId: me, kind: "follow", postId: null, commentId: null, listId: null, recommendationId: null });
     this.commit();
@@ -357,37 +374,97 @@ export class DemoStore implements DataStore {
     const row = this.db.userBooks.find((u) => u.userId === this.viewerId && u.bookId === bookId);
     return row ? this.userBook(row) : null;
   }
-  async setShelfStatus(bookId: string, status: ShelfStatus | null) {
-    const row = this.ensureUserBook(bookId);
-    const prev = row.status;
-    row.status = status;
-    row.updatedAt = nowIso();
-    const today = nowIso().slice(0, 10);
-    if (status === "reading" && prev !== "reading") {
-      row.startedAt = today;
-      row.finishedAt = null;
-      const reread = prev === "read";
-      this.db.sessions.push({ id: newId(), userId: row.userId, bookId, status: "reading", startedOn: today, finishedOn: null, isReread: reread, notes: null, createdAt: nowIso() });
-      this.db.posts.push(blankPost(row.userId, "started", bookId));
+  /** Mirrors public.set_shelf_status: one honest diary, posts only when asked, and an undo record. */
+  async setShelfStatus(bookId: string, status: ShelfStatus | null, opts: ShelfMoveOptions = {}): Promise<ShelfMove> {
+    const me = this.me();
+    this.book(bookId);
+    const prevRow = this.db.userBooks.find((u) => u.userId === me && u.bookId === bookId) ?? null;
+    if ((prevRow && prevRow.status === status) || (!prevRow && status === null)) {
+      return { userBook: prevRow ? this.userBook(prevRow) : null, changed: false, undo: null };
     }
-    if ((status === "read" || status === "dnf") && prev !== status) {
-      if (status === "read") row.finishedAt = today;
-      const open = this.db.sessions.filter((s) => s.userId === row.userId && s.bookId === bookId && s.status === "reading").sort(byNewest)[0];
-      if (open) {
-        open.status = status === "read" ? "finished" : "abandoned";
-        open.finishedOn = today;
-      } else if (status === "read") {
-        this.db.sessions.push({ id: newId(), userId: row.userId, bookId, status: "finished", startedOn: null, finishedOn: today, isReread: false, notes: null, createdAt: nowIso() });
+    const today = opts.date ?? nowIso().slice(0, 10);
+    const mine = () => this.db.sessions.filter((x) => x.userId === me && x.bookId === bookId);
+    const before = structuredClone(mine());
+    const prev = prevRow ? structuredClone(prevRow) : null;
+    const posts: string[] = [];
+    const open = mine().filter((x) => x.status === "reading").sort(byNewest)[0];
+    const session = (patch: Partial<SessionRow>) => {
+      const row: SessionRow = { id: newId(), userId: me, bookId, status: "reading", startedOn: null, finishedOn: null, isReread: false, notes: null, createdAt: nowIso(), ...patch };
+      this.db.sessions.push(row);
+    };
+    const share = (kind: "started" | "finished") => {
+      if (!opts.share) return;
+      const p = { ...blankPost(me, kind, bookId), visibility: opts.visibility ?? "public" };
+      this.db.posts.push(p);
+      posts.push(p.id);
+    };
+    let started = prev?.startedAt ?? null;
+    let finished = prev?.finishedAt ?? null;
+
+    if (status === "reading") {
+      if (prev?.status === "read" && !opts.reread) {
+        const last = mine().filter((x) => x.status === "finished").sort((x, y) => ((x.finishedOn ?? "") < (y.finishedOn ?? "") ? 1 : -1))[0];
+        if (last) {
+          last.status = "reading";
+          last.finishedOn = null;
+        } else session({ startedOn: today });
+        finished = null;
+      } else if (!open) {
+        session({ startedOn: today, isReread: Boolean(opts.reread) });
+        started = today;
+        finished = null;
       }
-      if (status === "read") this.db.posts.push(blankPost(row.userId, "finished", bookId));
+      share("started");
+    } else if (status === "read") {
+      if (open) {
+        open.status = "finished";
+        open.finishedOn = open.startedOn && open.startedOn > today ? open.startedOn : today;
+      } else if (!mine().some((x) => x.status === "finished" && x.finishedOn === today)) {
+        session({ status: "finished", finishedOn: today, isReread: Boolean(opts.reread) });
+      }
+      finished = today;
+      share("finished");
+    } else if (status === "dnf") {
+      if (open) {
+        open.status = "abandoned";
+        open.finishedOn = today;
+      }
+    } else {
+      if (open) {
+        if (open.startedOn === today && !open.notes) this.db.sessions = this.db.sessions.filter((x) => x.id !== open.id);
+        else {
+          open.status = "abandoned";
+          open.finishedOn = today;
+        }
+      }
+      if (prev?.status === "reading") started = null;
     }
-    if (status === null && !row.isFavourite && row.rating == null && row.shelves.length === 0) {
-      this.db.userBooks = this.db.userBooks.filter((u) => u.id !== row.id);
-      this.commit();
-      return null;
+
+    let result: UserBook | null = null;
+    if (status === null && prevRow && !prevRow.isFavourite && prevRow.rating == null && prevRow.shelves.length === 0 && prevRow.progressPages == null) {
+      this.db.userBooks = this.db.userBooks.filter((u) => u.id !== prevRow.id);
+    } else {
+      const row = this.ensureUserBook(bookId);
+      Object.assign(row, { status, startedAt: started, finishedAt: finished, updatedAt: nowIso() });
+      result = this.userBook(row);
     }
     this.commit();
-    return this.userBook(row);
+    return { userBook: result, changed: true, undo: { book_id: bookId, at: nowIso(), prev, sessions: before, posts_created: posts } };
+  }
+  async undoShelfMove(undo: ShelfUndo) {
+    const me = this.me();
+    const bookId = String(undo.book_id ?? "");
+    if (Date.parse(String(undo.at)) < Date.now() - 15 * 60_000) throw new ValidationError("That move is too old to undo");
+    const created = new Set((undo.posts_created as string[] | undefined) ?? []);
+    this.db.posts = this.db.posts.filter((p) => !(p.userId === me && created.has(p.id)));
+    // Only ever the caller's own rows for this book, whatever the record says.
+    const sessions = ((undo.sessions as SessionRow[] | undefined) ?? []).filter((x) => x.userId === me && x.bookId === bookId);
+    this.db.sessions = [...this.db.sessions.filter((x) => !(x.userId === me && x.bookId === bookId)), ...sessions];
+    const prev = undo.prev as UserBookRow | null;
+    this.db.userBooks = this.db.userBooks.filter((u) => !(u.userId === me && u.bookId === bookId));
+    if (prev && prev.userId === me && prev.bookId === bookId) this.db.userBooks.push(prev);
+    this.commit();
+    return this.getUserBook(bookId);
   }
   async setRating(bookId: string, rating: number | null) {
     const row = this.ensureUserBook(bookId);
@@ -573,7 +650,7 @@ export class DemoStore implements DataStore {
   async listMarginalia(query: MarginaliaQuery, cursor: string | null, limit = 18) {
     const following = query.tab === "following" ? new Set([this.me(), ...(await this.followingIds())]) : null;
     const rows = this.db.posts.filter((p) => {
-      if (p.kind !== "quote" || !p.quoteId || p.repostOfId || !this.visiblePost(p)) return false;
+      if (p.kind !== "quote" || !p.quoteId || p.repostOfId || !this.visiblePost(p) || this.mutedByViewer(p.userId)) return false;
       if (following ? !following.has(p.userId) : p.visibility !== "public") return false;
       const q = this.db.quotes.find((x) => x.id === p.quoteId);
       if (!q || q.isDraft) return false;
@@ -715,9 +792,9 @@ export class DemoStore implements DataStore {
     if (tab === "following") {
       const me = this.me();
       const ids = new Set([me, ...(await this.followingIds())]);
-      rows = this.db.posts.filter((p) => ids.has(p.userId) && this.visiblePost(p));
+      rows = this.db.posts.filter((p) => ids.has(p.userId) && !this.mutedByViewer(p.userId) && this.visiblePost(p));
     } else {
-      rows = this.db.posts.filter((p) => p.visibility === "public" && p.userId !== this.viewerId && this.visiblePost(p));
+      rows = this.db.posts.filter((p) => p.visibility === "public" && p.userId !== this.viewerId && !this.mutedByViewer(p.userId) && this.visiblePost(p));
     }
     return this.page(rows, cursor, limit);
   }
@@ -834,7 +911,9 @@ export class DemoStore implements DataStore {
   async listComments(postId: string): Promise<Comment[]> {
     const p = this.db.posts.find((x) => x.id === postId);
     if (!p || !this.visiblePost(p)) return [];
-    const rows = this.db.comments.filter((c) => c.postId === postId).sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));
+    const rows = this.db.comments
+      .filter((c) => c.postId === postId && !this.blockedBetween(c.userId, this.viewerId))
+      .sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));
     const toComment = (c: (typeof rows)[number]): Comment => ({ ...c, author: this.profile(c.userId), replies: [] });
     const top = rows.filter((c) => !c.parentId).map(toComment);
     const byId = new Map(top.map((c) => [c.id, c]));
@@ -848,6 +927,7 @@ export class DemoStore implements DataStore {
     if (!text) throw new ValidationError("Comment can't be empty.");
     if (text.length > 2000) throw new ValidationError("Comments are limited to 2,000 characters.");
     let parent = parentId ? this.db.comments.find((c) => c.id === parentId && c.postId === postId) : null;
+    if (parent && this.blockedBetween(parent.userId, me)) throw new AuthError("You can't reply to this comment.");
     if (parent?.parentId) parent = this.db.comments.find((c) => c.id === parent!.parentId) ?? parent; // keep one level of nesting
     const row = { id: newId(), postId, userId: me, parentId: parent?.id ?? null, body: text, createdAt: nowIso() };
     this.db.comments.push(row);
@@ -932,6 +1012,7 @@ export class DemoStore implements DataStore {
     const me = this.me();
     if (recipientId === me) throw new ValidationError("You can't pass a book to yourself.");
     this.profile(recipientId);
+    if (this.blockedBetween(me, recipientId)) throw new AuthError("You can't pass books to this reader.");
     this.book(bookId);
     const parent = parentId ? this.db.recommendations.find((r) => r.id === parentId && r.recipientId === me) : null;
     const row = { id: newId(), senderId: me, recipientId, bookId, message: message?.trim() || null, parentId: parent?.id ?? null, seenAt: null, createdAt: nowIso() };
@@ -943,6 +1024,122 @@ export class DemoStore implements DataStore {
   async listRecommendationsReceived(limit = 30) {
     const me = this.me();
     return this.db.recommendations.filter((r) => r.recipientId === me).sort(byNewest).slice(0, limit).map((r) => this.recommendation(r));
+  }
+
+  // ── safety & your data ──────────────────────────────────────────────
+  async relationship(targetId: string): Promise<Relationship> {
+    const me = this.viewerId;
+    if (!me || me === targetId) return { following: false, blocked: false, muted: false };
+    return {
+      following: this.follows(me, targetId),
+      blocked: (this.db.blocks ??= []).some((b) => b.blockerId === me && b.blockedId === targetId),
+      muted: this.mutedByViewer(targetId),
+    };
+  }
+  async block(targetId: string) {
+    const me = this.me();
+    if (me === targetId) throw new ValidationError("You can't block yourself.");
+    this.profile(targetId);
+    const blocks = (this.db.blocks ??= []);
+    if (!blocks.some((b) => b.blockerId === me && b.blockedId === targetId)) blocks.push({ blockerId: me, blockedId: targetId, createdAt: nowIso() });
+    // As in the database: a block removes follows (and list follows) both ways.
+    this.db.follows = this.db.follows.filter((f) => !((f.followerId === me && f.followingId === targetId) || (f.followerId === targetId && f.followingId === me)));
+    const owner = new Map(this.db.lists.map((l) => [l.id, l.userId]));
+    this.db.listFollows = this.db.listFollows.filter((lf) => {
+      const o = owner.get(lf.listId);
+      return !((lf.userId === targetId && o === me) || (lf.userId === me && o === targetId));
+    });
+    this.commit();
+  }
+  async unblock(targetId: string) {
+    const me = this.me();
+    this.db.blocks = (this.db.blocks ??= []).filter((b) => !(b.blockerId === me && b.blockedId === targetId));
+    this.commit();
+  }
+  async mute(targetId: string) {
+    const me = this.me();
+    if (me === targetId) throw new ValidationError("You can't mute yourself.");
+    this.profile(targetId);
+    const mutes = (this.db.mutes ??= []);
+    if (!mutes.some((m) => m.muterId === me && m.mutedId === targetId)) mutes.push({ muterId: me, mutedId: targetId, createdAt: nowIso() });
+    this.commit();
+  }
+  async unmute(targetId: string) {
+    const me = this.me();
+    this.db.mutes = (this.db.mutes ??= []).filter((m) => !(m.muterId === me && m.mutedId === targetId));
+    this.commit();
+  }
+  async listBlocked() {
+    const me = this.me();
+    return (this.db.blocks ??= []).filter((b) => b.blockerId === me).sort(byNewestFollow).map((b) => this.profile(b.blockedId));
+  }
+  async listMuted() {
+    const me = this.me();
+    return (this.db.mutes ??= []).filter((m) => m.muterId === me).sort(byNewestFollow).map((m) => this.profile(m.mutedId));
+  }
+  async report(input: ReportInput) {
+    const me = this.me();
+    const reports = (this.db.reports ??= []);
+    if (reports.some((r) => r.reporterId === me && r.targetType === input.targetType && r.targetId === input.targetId)) return;
+    reports.push({ id: newId(), reporterId: me, ...input, status: "open", createdAt: nowIso() });
+    this.commit();
+  }
+  async exportMyData() {
+    const me = this.me();
+    const db = this.db;
+    const listIds = new Set(db.lists.filter((l) => l.userId === me).map((l) => l.id));
+    return {
+      exportedAt: nowIso(),
+      profile: db.profiles.find((p) => p.id === me) ?? null,
+      shelves: db.userBooks.filter((u) => u.userId === me).map((u) => ({ ...u, book: this.book(u.bookId).title })),
+      diary: db.sessions.filter((x) => x.userId === me),
+      reviews: db.reviews.filter((r) => r.userId === me),
+      annotations: db.quotes.filter((q) => q.userId === me),
+      lists: db.lists.filter((l) => l.userId === me),
+      listBooks: db.listBooks.filter((lb) => listIds.has(lb.listId)),
+      posts: db.posts.filter((p) => p.userId === me),
+      comments: db.comments.filter((c) => c.userId === me),
+      likes: db.likes.filter((l) => l.userId === me),
+      bookmarks: db.bookmarks.filter((b) => b.userId === me),
+      following: db.follows.filter((f) => f.followerId === me),
+      followers: db.follows.filter((f) => f.followingId === me),
+      passesSent: db.recommendations.filter((r) => r.senderId === me),
+      passesReceived: db.recommendations.filter((r) => r.recipientId === me),
+      blocks: (db.blocks ?? []).filter((b) => b.blockerId === me),
+      mutes: (db.mutes ?? []).filter((m) => m.muterId === me),
+      reports: (db.reports ?? []).filter((r) => r.reporterId === me),
+    };
+  }
+  async deleteMyAccount() {
+    const me = this.me();
+    const db = this.db;
+    // Everything that references the reader (mirrors ON DELETE CASCADE in the schema).
+    const myPosts = new Set(db.posts.filter((p) => p.userId === me).map((p) => p.id));
+    const myLists = new Set(db.lists.filter((l) => l.userId === me).map((l) => l.id));
+    const reposts = new Set(db.posts.filter((p) => p.repostOfId && myPosts.has(p.repostOfId)).map((p) => p.id));
+    const goneP = new Set([...myPosts, ...reposts]);
+    const myComments = new Set(db.comments.filter((c) => c.userId === me || goneP.has(c.postId)).map((c) => c.id));
+    db.comments = db.comments.filter((c) => !myComments.has(c.id) && !(c.parentId && myComments.has(c.parentId)));
+    db.posts = db.posts.filter((p) => !goneP.has(p.id));
+    db.likes = db.likes.filter((l) => l.userId !== me && !goneP.has(l.postId));
+    db.bookmarks = db.bookmarks.filter((b) => b.userId !== me && !goneP.has(b.postId));
+    db.reviews = db.reviews.filter((r) => r.userId !== me);
+    db.quotes = db.quotes.filter((q) => q.userId !== me);
+    db.lists = db.lists.filter((l) => l.userId !== me);
+    db.listBooks = db.listBooks.filter((lb) => !myLists.has(lb.listId));
+    db.listFollows = db.listFollows.filter((lf) => lf.userId !== me && !myLists.has(lf.listId));
+    db.userBooks = db.userBooks.filter((u) => u.userId !== me);
+    db.sessions = db.sessions.filter((x) => x.userId !== me);
+    db.follows = db.follows.filter((f) => f.followerId !== me && f.followingId !== me);
+    db.recommendations = db.recommendations.filter((r) => r.senderId !== me && r.recipientId !== me);
+    db.notifications = db.notifications.filter((n) => n.recipientId !== me && n.actorId !== me && !(n.postId && goneP.has(n.postId)));
+    db.blocks = (db.blocks ?? []).filter((b) => b.blockerId !== me && b.blockedId !== me);
+    db.mutes = (db.mutes ?? []).filter((m) => m.muterId !== me && m.mutedId !== me);
+    db.reports = (db.reports ?? []).filter((r) => r.reporterId !== me);
+    db.profiles = db.profiles.filter((p) => p.id !== me);
+    db.users = db.users.filter((u) => u.id !== me);
+    removeDemoUploads(me);
+    this.commit();
   }
 
   // ── stats ───────────────────────────────────────────────────────────

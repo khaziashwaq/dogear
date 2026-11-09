@@ -2,7 +2,7 @@
 
 import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
-import { env, isSupabaseConfigured } from "@/lib/env";
+import { env, isDemoMode, isSupabaseConfigured } from "@/lib/env";
 
 function safeNext(next: unknown) {
   return typeof next === "string" && next.startsWith("/") && !next.startsWith("//") ? next : "/home";
@@ -39,7 +39,7 @@ export async function googleSignInAction(form: FormData) {
 
 /** Demo mode only: step into one of the sample readers' shoes. */
 export async function demoSignInAction(form: FormData) {
-  if (isSupabaseConfigured) redirect("/login");
+  if (!isDemoMode) redirect("/login");
   const username = String(form.get("username") ?? "margo");
   const { getDemoDB } = await import("@/lib/data/demo/db");
   const profile = getDemoDB().profiles.find((p) => p.username === username);
@@ -61,7 +61,7 @@ export async function signOutAction() {
 }
 
 export async function resetDemoAction() {
-  if (isSupabaseConfigured) return;
+  if (!isDemoMode) return;
   const { resetDemoDB } = await import("@/lib/data/demo/db");
   const { DEMO_COOKIE } = await import("@/lib/data/demo/session");
   resetDemoDB();

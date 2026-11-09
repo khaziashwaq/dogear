@@ -3,6 +3,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Avatar } from "@/components/profile/avatar";
 import { FollowButton } from "@/components/profile/follow-button";
+import { ReaderMenu } from "@/components/profile/reader-menu";
 import { ProfileTabs } from "@/components/profile/profile-tabs";
 import { ButtonLink } from "@/components/ui/button";
 import { Sparkle } from "@/components/ui/doodles";
@@ -40,7 +41,11 @@ export default async function ProfileLayout({ params, children }: LayoutProps<"/
   if (!profile || !profile.username) notFound();
   const [store, viewer] = await Promise.all([getStore(), getViewer()]);
   const own = viewer?.id === profile.id;
-  const [compat, summary] = await Promise.all([viewer && !own ? store.compatibility(profile.id) : null, store.getShelfSummary(profile.id)]);
+  const [compat, summary, rel] = await Promise.all([
+    viewer && !own ? store.compatibility(profile.id) : null,
+    store.getShelfSummary(profile.id),
+    viewer && !own ? store.relationship(profile.id) : null,
+  ]);
   const a = ACCENT[profile.accent];
 
   return (
@@ -64,7 +69,10 @@ export default async function ProfileLayout({ params, children }: LayoutProps<"/
               {own ? (
                 <ButtonLink href="/settings" variant="paper" size="sm">Edit profile</ButtonLink>
               ) : (
-                <FollowButton userId={profile.id} name={profile.displayName} size="md" />
+                <>
+                  {!rel?.blocked && <FollowButton userId={profile.id} name={profile.displayName} size="md" />}
+                  {rel && <ReaderMenu userId={profile.id} name={profile.displayName} initial={rel} />}
+                </>
               )}
             </div>
           </div>
@@ -98,6 +106,11 @@ export default async function ProfileLayout({ params, children }: LayoutProps<"/
           </div>
         </div>
       </header>
+      {rel?.blocked && (
+        <p role="status" className="mt-6 border border-line-strong bg-paper-deep px-4 py-3 text-sm text-ink-soft">
+          You&rsquo;ve blocked {profile.displayName}. You won&rsquo;t see their posts, reviews or shelves, and they can&rsquo;t reach you.
+        </p>
+      )}
       <div className="mt-8"><ProfileTabs username={profile.username} /></div>
       <div className="mt-8">{children}</div>
     </div>

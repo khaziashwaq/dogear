@@ -20,18 +20,23 @@ import type {
   ReadingListDetail,
   ReadingSession,
   Recommendation,
+  Relationship,
+  ReportInput,
   Review,
   ReviewInput,
   SavedBook,
   SessionInput,
+  ShelfMove,
+  ShelfMoveOptions,
   ShelfQuery,
   ShelfStatus,
   ShelfSummary,
+  ShelfUndo,
   UpdatePostInput,
   UserBook,
 } from "@/lib/types";
 import { normaliseRating, slugify } from "@/lib/utils";
-import { AuthError, NotFoundError, ValidationError, computeHistogram, emptyStats, type DataStore } from "../store";
+import { AuthError, NotFoundError, RateLimitError, ValidationError, computeHistogram, emptyStats, type DataStore } from "../store";
 import { buildStats, cleanShelves, sortShelf } from "../shared";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -83,6 +88,9 @@ function fail(error: { message: string; code?: string } | null, fallback = "Some
   if (error.code === "23505") throw new ValidationError("That already exists.");
   if (error.code === "42501") throw new AuthError("You don't have permission to do that.");
   if (error.code === "23514") throw new ValidationError("Some of those details aren't valid.");
+  if (error.code === "DG429") throw new RateLimitError();
+  if (error.code === "P0002") throw new NotFoundError(error.message);
+  if (error.code === "22023") throw new ValidationError(error.message);
   throw new Error(`${fallback} (${error.message})`);
 }
 
@@ -296,6 +304,9 @@ export class SupabaseStore implements DataStore {
   }
   async upsertBook(input: BookInput) {
     const me = this.me();
+    // The catalogue is shared, so only the server writes it (readers have no insert/update rights on books).
+    const { supabaseAdmin } = await import("@/lib/supabase/admin");
+    const admin = supabaseAdmin();
     if (input.olWorkId) {
       const found = await this.getBookByOlWorkId(input.olWorkId);
       if (found) return found;
@@ -307,7 +318,7 @@ export class SupabaseStore implements DataStore {
     const base = slugify(`${input.title} ${input.authors[0] ?? ""}`);
     const { data: clash } = await this.sb.from("books").select("id").eq("slug", base).maybeSingle();
     const slug = clash ? `${base}-${(input.olWorkId ?? crypto.randomUUID().slice(0, 6)).toLowerCase()}` : base;
-    const { data, error } = await this.sb.from("books").insert({
+    const { data, error } = await admin.from("books").insert({
       slug, title: input.title, subtitle: input.subtitle, authors: input.authors, description: input.description,
       cover_url: input.coverUrl, isbn13: input.isbn13, isbn10: input.isbn10, ol_work_id: input.olWorkId, ol_edition_id: input.olEditionId,
       published_year: input.publishedYear, publisher: input.publisher, page_count: input.pageCount, language: input.language,
@@ -376,32 +387,20 @@ export class SupabaseStore implements DataStore {
     fail(error, "Couldn't update your shelf");
     return mapUserBook(data);
   }
-  async setShelfStatus(bookId: string, status: ShelfStatus | null) {
-    const me = this.me();
-    const prev = await this.getUserBook(bookId);
-    const today = new Date().toISOString().slice(0, 10);
-    if (status === null && prev && !prev.isFavourite && prev.rating == null && prev.shelves.length === 0) {
-      await this.sb.from("user_books").delete().eq("id", prev.id);
-      return null;
-    }
-    const patch: Row = { status };
-    if (status === "reading" && prev?.status !== "reading") {
-      Object.assign(patch, { started_at: today, finished_at: null });
-      await this.sb.from("reading_sessions").insert({ user_id: me, book_id: bookId, status: "reading", started_on: today, is_reread: prev?.status === "read" });
-      await this.sb.from("posts").insert({ user_id: me, kind: "started", book_id: bookId });
-    }
-    if ((status === "read" || status === "dnf") && prev?.status !== status) {
-      if (status === "read") patch.finished_at = today;
-      const { data: open } = await this.sb.from("reading_sessions").select("id").eq("user_id", me).eq("book_id", bookId).eq("status", "reading")
-        .order("created_at", { ascending: false }).limit(1).maybeSingle();
-      if (open) {
-        await this.sb.from("reading_sessions").update({ status: status === "read" ? "finished" : "abandoned", finished_on: today }).eq("id", open.id);
-      } else if (status === "read") {
-        await this.sb.from("reading_sessions").insert({ user_id: me, book_id: bookId, status: "finished", finished_on: today });
-      }
-      if (status === "read") await this.sb.from("posts").insert({ user_id: me, kind: "finished", book_id: bookId });
-    }
-    return this.patchUserBook(bookId, patch);
+  async setShelfStatus(bookId: string, status: ShelfStatus | null, opts: ShelfMoveOptions = {}): Promise<ShelfMove> {
+    this.me();
+    const { data, error } = await this.sb.rpc("set_shelf_status", {
+      p_book_id: bookId, p_status: status, p_reread: Boolean(opts.reread), p_share: Boolean(opts.share),
+      p_visibility: opts.visibility ?? "public", p_date: opts.date ?? null,
+    });
+    fail(error, "Couldn't update your shelf");
+    return { userBook: await this.getUserBook(bookId), changed: Boolean(data?.changed), undo: (data?.undo as ShelfUndo) ?? null };
+  }
+  async undoShelfMove(undo: ShelfUndo) {
+    this.me();
+    const { error } = await this.sb.rpc("undo_shelf_move", { p_undo: undo });
+    fail(error, "Couldn't undo that");
+    return typeof undo.book_id === "string" ? this.getUserBook(undo.book_id) : null;
   }
   async setRating(bookId: string, rating: number | null) {
     return this.patchUserBook(bookId, { rating: normaliseRating(rating) });
@@ -499,7 +498,12 @@ export class SupabaseStore implements DataStore {
     const me = this.me();
     const { data, error } = await this.sb.from("reviews").insert({ user_id: me, book_id: input.bookId, ...this.reviewRow(input) }).select(REVIEW_SELECT).single();
     fail(error, "Couldn't publish your review");
-    const { data: post } = await this.sb.from("posts").insert({ user_id: me, kind: "review", book_id: input.bookId, review_id: data.id, visibility: input.visibility }).select("id").single();
+    const { data: post, error: postError } = await this.sb.from("posts").insert({ user_id: me, kind: "review", book_id: input.bookId, review_id: data.id, visibility: input.visibility }).select("id").single();
+    if (postError) {
+      // Don't leave a review that can't be liked or commented on.
+      await this.sb.from("reviews").delete().eq("id", data.id);
+      fail(postError, "Couldn't publish your review");
+    }
     if (input.rating != null) {
       const prev = await this.getUserBook(input.bookId);
       await this.patchUserBook(input.bookId, { rating: normaliseRating(input.rating), status: prev?.status ?? "read" });
@@ -553,8 +557,8 @@ export class SupabaseStore implements DataStore {
     if (!before) throw new NotFoundError("Annotation not found");
     if (input.isDraft && !before.is_draft) throw new ValidationError("A published annotation can't become a draft again.");
     const publishing = before.is_draft && !input.isDraft;
-    const patch = { ...this.quoteRow(input), ...(publishing ? { created_at: new Date().toISOString() } : {}) };
-    const { data, error } = await this.sb.from("quotes").update(patch).eq("id", id).eq("user_id", me).select(QUOTE_SELECT).single();
+    // Publishing re-dates the annotation to now; the database does that (created_at isn't client-writable).
+    const { data, error } = await this.sb.from("quotes").update(this.quoteRow(input)).eq("id", id).eq("user_id", me).select(QUOTE_SELECT).single();
     fail(error, "Couldn't save that annotation");
     if (publishing) {
       const { error: postError } = await this.sb.from("posts").insert({ user_id: me, kind: "quote", book_id: before.book_id, quote_id: id, visibility: input.visibility });
@@ -565,9 +569,10 @@ export class SupabaseStore implements DataStore {
   async listMarginalia(query: MarginaliaQuery, cursor: string | null, limit = 18) {
     // Inner joins so filters on the annotation (tags, drafts) and the book (genre) narrow the posts themselves.
     const select = `*, ${author("posts")}, book:books${query.genre ? "!inner" : ""}(*), quote:quotes!inner(${QUOTE_SELECT})`;
-    let q = this.sb.from("posts").select(select).eq("kind", "quote").is("repost_of_id", null).eq("quote.is_draft", false);
-    if (query.tab === "following") q = q.in("user_id", [this.me(), ...(await this.followingIds())]);
-    else q = q.eq("visibility", "public");
+    // Feeds come from database functions (they join follows / mutes there), so no id lists travel in the URL.
+    if (query.tab === "following") this.me();
+    let q = this.sb.rpc(query.tab === "following" ? "following_posts" : "public_posts").select(select)
+      .eq("kind", "quote").is("repost_of_id", null).eq("quote.is_draft", false);
     if (query.bookId) q = q.eq("book_id", query.bookId);
     if (query.tag) q = q.contains("quote.tags", [query.tag]);
     if (query.genre) q = q.contains("book.genres", [query.genre]);
@@ -637,7 +642,11 @@ export class SupabaseStore implements DataStore {
     const me = this.me();
     const { data, error } = await this.sb.from("lists").insert({ user_id: me, ...this.listRow(input) }).select(LIST_SELECT).single();
     fail(error, "Couldn't create that list");
-    await this.sb.from("posts").insert({ user_id: me, kind: "list", list_id: data.id, visibility: input.visibility });
+    const { error: postError } = await this.sb.from("posts").insert({ user_id: me, kind: "list", list_id: data.id, visibility: input.visibility });
+    if (postError) {
+      await this.sb.from("lists").delete().eq("id", data.id);
+      fail(postError, "Couldn't create that list");
+    }
     return (await this.hydrateLists([data]))[0];
   }
   async updateList(id: string, input: ListInput) {
@@ -681,14 +690,8 @@ export class SupabaseStore implements DataStore {
 
   // ── posts & feed ────────────────────────────────────────────────────
   async getFeed(tab: "following" | "discover", cursor: string | null, limit = 12) {
-    let q = this.sb.from("posts").select(POST_SELECT);
-    if (tab === "following") {
-      const me = this.me();
-      q = q.in("user_id", [me, ...(await this.followingIds())]);
-    } else {
-      q = q.eq("visibility", "public");
-      if (this.viewerId) q = q.neq("user_id", this.viewerId);
-    }
+    if (tab === "following") this.me();
+    const q = this.sb.rpc(tab === "following" ? "following_posts" : "discover_posts").select(POST_SELECT);
     return this.pagePosts(q, cursor, limit);
   }
   async getUserPosts(userId: string, cursor: string | null, limit = 12) {
@@ -845,6 +848,101 @@ export class SupabaseStore implements DataStore {
       .select("*, sender:profiles!recommendations_sender_id_fkey(*), recipient:profiles!recommendations_recipient_id_fkey(*), book:books(*)")
       .eq("recipient_id", this.me()).order("created_at", { ascending: false }).limit(limit);
     return (data ?? []).map(mapRecommendation);
+  }
+
+  // ── safety & your data ──────────────────────────────────────────────
+  async relationship(targetId: string): Promise<Relationship> {
+    if (!this.viewerId || targetId === this.viewerId) return { following: false, blocked: false, muted: false };
+    const me = this.viewerId;
+    const [f, b, m] = await Promise.all([
+      this.sb.from("follows").select("follower_id").eq("follower_id", me).eq("following_id", targetId).maybeSingle(),
+      this.sb.from("blocks").select("blocker_id").eq("blocker_id", me).eq("blocked_id", targetId).maybeSingle(),
+      this.sb.from("mutes").select("muter_id").eq("muter_id", me).eq("muted_id", targetId).maybeSingle(),
+    ]);
+    return { following: Boolean(f.data), blocked: Boolean(b.data), muted: Boolean(m.data) };
+  }
+  async block(targetId: string) {
+    const me = this.me();
+    if (me === targetId) throw new ValidationError("You can't block yourself.");
+    const { error } = await this.sb.from("blocks").upsert({ blocker_id: me, blocked_id: targetId }, { onConflict: "blocker_id,blocked_id", ignoreDuplicates: true });
+    fail(error, "Couldn't block");
+  }
+  async unblock(targetId: string) {
+    const { error } = await this.sb.from("blocks").delete().eq("blocker_id", this.me()).eq("blocked_id", targetId);
+    fail(error);
+  }
+  async mute(targetId: string) {
+    const me = this.me();
+    if (me === targetId) throw new ValidationError("You can't mute yourself.");
+    const { error } = await this.sb.from("mutes").upsert({ muter_id: me, muted_id: targetId }, { onConflict: "muter_id,muted_id", ignoreDuplicates: true });
+    fail(error, "Couldn't mute");
+  }
+  async unmute(targetId: string) {
+    const { error } = await this.sb.from("mutes").delete().eq("muter_id", this.me()).eq("muted_id", targetId);
+    fail(error);
+  }
+  async listBlocked() {
+    const { data } = await this.sb.from("blocks").select("p:profiles!blocks_blocked_id_fkey(*)").eq("blocker_id", this.me()).order("created_at", { ascending: false });
+    return (data ?? []).map((r: Row) => mapProfile(r.p));
+  }
+  async listMuted() {
+    const { data } = await this.sb.from("mutes").select("p:profiles!mutes_muted_id_fkey(*)").eq("muter_id", this.me()).order("created_at", { ascending: false });
+    return (data ?? []).map((r: Row) => mapProfile(r.p));
+  }
+  async report(input: ReportInput) {
+    const { error } = await this.sb.from("reports").insert({
+      reporter_id: this.me(), target_type: input.targetType, target_id: input.targetId, reason: input.reason, details: input.details,
+    });
+    if (error?.code === "23505") return; // already reported: nothing more to do
+    fail(error, "Couldn't send that report");
+  }
+  async exportMyData() {
+    const me = this.me();
+    const all = (q: any) => q.then(({ data, error }: { data: Row[] | null; error: { message: string } | null }) => {
+      fail(error, "Couldn't export your data");
+      return data ?? [];
+    });
+    const [profile, shelves, diary, reviews, annotations, lists, listBooks, posts, comments, likes, bookmarks, following, followers, passesSent, passesReceived, blocks, mutes, reports] = await Promise.all([
+      all(this.sb.from("profiles").select("*").eq("id", me)),
+      all(this.sb.from("user_books").select("*, book:books(title, authors, isbn13, ol_work_id)").eq("user_id", me)),
+      all(this.sb.from("reading_sessions").select("*, book:books(title, authors)").eq("user_id", me)),
+      all(this.sb.from("reviews").select("*, book:books(title, authors)").eq("user_id", me)),
+      all(this.sb.from("quotes").select("*, book:books(title, authors)").eq("user_id", me)),
+      all(this.sb.from("lists").select("*").eq("user_id", me)),
+      all(this.sb.from("list_books").select("*, list:lists!inner(user_id), book:books(title, authors)").eq("list.user_id", me)),
+      all(this.sb.from("posts").select("*").eq("user_id", me)),
+      all(this.sb.from("comments").select("*").eq("user_id", me)),
+      all(this.sb.from("likes").select("*").eq("user_id", me)),
+      all(this.sb.from("bookmarks").select("*").eq("user_id", me)),
+      all(this.sb.from("follows").select("following_id, created_at").eq("follower_id", me)),
+      all(this.sb.from("follows").select("follower_id, created_at").eq("following_id", me)),
+      all(this.sb.from("recommendations").select("*").eq("sender_id", me)),
+      all(this.sb.from("recommendations").select("*").eq("recipient_id", me)),
+      all(this.sb.from("blocks").select("*").eq("blocker_id", me)),
+      all(this.sb.from("mutes").select("*").eq("muter_id", me)),
+      all(this.sb.from("reports").select("*").eq("reporter_id", me)),
+    ]);
+    return {
+      exportedAt: new Date().toISOString(), profile: profile[0] ?? null, shelves, diary, reviews, annotations, lists, listBooks, posts,
+      comments, likes, bookmarks, following, followers, passesSent, passesReceived, blocks, mutes, reports,
+    };
+  }
+  async deleteMyAccount() {
+    const me = this.me();
+    const { supabaseAdmin } = await import("@/lib/supabase/admin");
+    const admin = supabaseAdmin();
+    // Uploads first (they aren't tied to the database rows), then the auth user: every table
+    // references profiles(id) → auth.users(id) with ON DELETE CASCADE, so the rest follows.
+    for (;;) {
+      const { data: files, error } = await admin.storage.from("media").list(me, { limit: 100 });
+      if (error) throw new Error(`Couldn't remove your uploads (${error.message})`);
+      if (!files?.length) break;
+      const { error: rmError } = await admin.storage.from("media").remove(files.map((f) => `${me}/${f.name}`));
+      if (rmError) throw new Error(`Couldn't remove your uploads (${rmError.message})`);
+      if (files.length < 100) break;
+    }
+    const { error } = await admin.auth.admin.deleteUser(me);
+    if (error) throw new Error(`Couldn't delete your account (${error.message})`);
   }
 
   // ── stats ───────────────────────────────────────────────────────────

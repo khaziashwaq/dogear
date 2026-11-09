@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
+import { imageUrl } from "@/lib/validation";
 import { getStore } from "@/lib/auth";
 import { resolveBook, run, type BookRefInput } from "@/lib/server-action";
 
@@ -97,7 +98,7 @@ const listSchema = z.object({
   title: z.string().trim().min(1, "Give your list a title.").max(120),
   description: z.string().trim().max(2000).transform((v) => v || null).nullable(),
   coverStyle: z.enum(["rose", "sage", "butter", "burgundy", "ink", "collage"]),
-  coverImageUrl: z.string().max(500).nullable(),
+  coverImageUrl: imageUrl(),
   visibility,
   isRanked: z.boolean(),
 });
@@ -147,9 +148,9 @@ export async function removeFromListAction(listId: string, bookId: string) {
   });
 }
 
-export async function updateListBookAction(listId: string, bookId: string, note: string | null, imageUrl: string | null) {
+export async function updateListBookAction(listId: string, bookId: string, note: string | null, image: string | null) {
   return run(async () => {
-    await (await getStore()).updateListBook(id.parse(listId), id.parse(bookId), z.string().trim().max(500).nullable().parse(note) || null, z.string().max(500).nullable().parse(imageUrl));
+    await (await getStore()).updateListBook(id.parse(listId), id.parse(bookId), z.string().trim().max(500).nullable().parse(note) || null, imageUrl().parse(image));
     revalidatePath(`/lists/${listId}`);
   });
 }

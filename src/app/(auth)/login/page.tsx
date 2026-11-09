@@ -5,7 +5,7 @@ import { GoogleSignIn } from "@/components/auth/auth-form";
 import { Avatar } from "@/components/profile/avatar";
 import { getViewer } from "@/lib/auth";
 import { SEED_USERS } from "@/lib/data/seed/community";
-import { env, isSupabaseConfigured } from "@/lib/env";
+import { env, isDemoMode, isSupabaseConfigured } from "@/lib/env";
 
 export const metadata: Metadata = { title: "Sign in" };
 
@@ -27,7 +27,7 @@ export default async function LoginPage({ searchParams }: PageProps<"/login">) {
         <p className="mt-4 text-center text-xs text-ink-faint">First time? You&rsquo;ll pick a username and set up your profile next.</p>
       </div>
 
-      {!isSupabaseConfigured && (
+      {isDemoMode && (
         <section className="mt-8 border border-dashed border-line-strong px-6 py-5" aria-labelledby="demo-heading">
           <h2 id="demo-heading" className="text-xl">Explore as a sample reader</h2>
           <p className="mt-1 text-sm text-ink-soft">

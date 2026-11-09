@@ -1,7 +1,10 @@
+import { connection } from "next/server";
 import { Logo } from "@/components/brand/logo";
 import { ButtonLink } from "@/components/ui/button";
 
-export default function NotFound() {
+export default async function NotFound() {
+  // Rendered per request so its scripts carry the CSP nonce.
+  await connection();
   return (
     <main id="main" className="flex min-h-dvh flex-col items-center justify-center px-6 text-center">
       <Logo />

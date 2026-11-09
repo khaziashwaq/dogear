@@ -115,3 +115,33 @@ export async function sendRecommendationAction(input: { recipientId: string; boo
     return store.sendRecommendation(id.parse(input.recipientId), book.id, z.string().max(1000).parse(input.message), input.parentId ? id.parse(input.parentId) : null);
   });
 }
+
+// ── safety ─────────────────────────────────────────────────────────────
+export async function setBlockedAction(targetId: string, blocked: boolean) {
+  return run(async () => {
+    const store = await getStore();
+    if (blocked) await store.block(id.parse(targetId));
+    else await store.unblock(id.parse(targetId));
+    revalidatePath("/", "layout");
+  });
+}
+
+export async function setMutedAction(targetId: string, muted: boolean) {
+  return run(async () => {
+    const store = await getStore();
+    if (muted) await store.mute(id.parse(targetId));
+    else await store.unmute(id.parse(targetId));
+    revalidatePath("/", "layout");
+  });
+}
+
+const reportSchema = z.object({
+  targetType: z.enum(["profile", "post", "comment", "review", "quote", "list"]),
+  targetId: id,
+  reason: z.enum(["spam", "harassment", "hate", "sexual", "spoilers", "other"]),
+  details: z.string().trim().max(1000).nullable().transform((v) => v || null),
+});
+
+export async function reportAction(input: z.input<typeof reportSchema>) {
+  return run(async () => (await getStore()).report(reportSchema.parse(input)));
+}

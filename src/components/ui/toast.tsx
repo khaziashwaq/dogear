@@ -4,17 +4,27 @@ import { AnimatePresence, motion } from "framer-motion";
 import { createContext, useCallback, useContext, useState } from "react";
 
 type Tone = "default" | "error";
-interface Toast { id: number; message: string; tone: Tone }
+/** A single follow-up the reader can take from the toast, such as Undo. */
+export interface ToastAction {
+  label: string;
+  onClick: () => void;
+}
+interface Toast { id: number; message: string; tone: Tone; action?: ToastAction }
 
-const ToastCtx = createContext<(message: string, tone?: Tone) => void>(() => {});
+const ToastCtx = createContext<(message: string, tone?: Tone, action?: ToastAction) => void>(() => {});
 
 export function ToastProvider({ children }: { children: React.ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
-  const push = useCallback((message: string, tone: Tone = "default") => {
-    const id = Date.now() + Math.random();
-    setToasts((t) => [...t.slice(-2), { id, message, tone }]);
-    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 3600);
-  }, []);
+  const dismiss = useCallback((id: number) => setToasts((t) => t.filter((x) => x.id !== id)), []);
+  const push = useCallback(
+    (message: string, tone: Tone = "default", action?: ToastAction) => {
+      const id = Date.now() + Math.random();
+      setToasts((t) => [...t.slice(-2), { id, message, tone, action }]);
+      // Long enough to reach an Undo button without hurrying.
+      setTimeout(() => dismiss(id), action ? 8000 : 3600);
+    },
+    [dismiss],
+  );
   return (
     <ToastCtx.Provider value={push}>
       {children}
@@ -26,12 +36,24 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
               initial={{ opacity: 0, y: 16, rotate: -1 }}
               animate={{ opacity: 1, y: 0, rotate: -0.5 }}
               exit={{ opacity: 0, y: 8 }}
-              className={`pointer-events-auto max-w-sm border px-4 py-2.5 text-sm shadow-[var(--shadow-lift)] ${
+              className={`pointer-events-auto flex max-w-sm items-center gap-4 border px-4 py-2.5 text-sm shadow-[var(--shadow-lift)] ${
                 t.tone === "error" ? "border-burgundy bg-burgundy text-paper" : "border-ink bg-ink text-paper"
               }`}
               role={t.tone === "error" ? "alert" : "status"}
             >
-              {t.message}
+              <span>{t.message}</span>
+              {t.action && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    dismiss(t.id);
+                    t.action!.onClick();
+                  }}
+                  className="-my-1 shrink-0 border-b border-butter py-1 font-medium text-butter hover:text-paper focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-butter"
+                >
+                  {t.action.label}
+                </button>
+              )}
             </motion.div>
           ))}
         </AnimatePresence>

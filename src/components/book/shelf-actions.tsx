@@ -4,7 +4,7 @@ import { BookCheck, BookMarked, BookOpen, CalendarPlus, Check, Heart, Library, M
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState, useTransition } from "react";
-import { addSessionAction, ensureBookAction, setCustomShelvesAction, setFavouriteAction, setProgressAction, setRatingAction, setShelfStatusAction } from "@/app/actions/books";
+import { addSessionAction, ensureBookAction, setCustomShelvesAction, setFavouriteAction, setProgressAction, setRatingAction, setShelfStatusAction, undoShelfMoveAction } from "@/app/actions/books";
 import { addToListAction, myListsAction } from "@/app/actions/content";
 import { searchReadersAction, sendRecommendationAction } from "@/app/actions/social";
 import { Avatar } from "@/components/profile/avatar";
@@ -43,12 +43,16 @@ export function ShelfActions({ book, userBook, signedIn, following }: { book: Bo
     );
   }
 
-  const run = (fn: () => Promise<{ ok: true; data: { userBook: UserBook | null } } | { ok: false; error: string }>, msg?: string) =>
+  const run = (
+    fn: () => Promise<{ ok: true; data: { userBook: UserBook | null; undo?: Record<string, unknown> | null } } | { ok: false; error: string }>,
+    msg?: string,
+  ) =>
     start(async () => {
       const res = await fn();
       if (!res.ok) return toast(res.error, "error");
       setUb(res.data.userBook);
-      if (msg) toast(msg);
+      const record = res.data.undo;
+      if (msg) toast(msg, "default", record ? { label: "Undo", onClick: () => run(() => undoShelfMoveAction(record), "Put back") } : undefined);
       router.refresh();
     });
 
@@ -82,7 +86,7 @@ export function ShelfActions({ book, userBook, signedIn, following }: { book: Bo
       </div>
 
       {ub?.status === "read" && (
-        <Button variant="paper" className="w-full" disabled={pending} onClick={() => run(() => setShelfStatusAction(ref, "reading"), "Re-reading — welcome back")}>
+        <Button variant="paper" className="w-full" disabled={pending} onClick={() => run(() => setShelfStatusAction(ref, "reading", { reread: true }), "Re-reading — welcome back")}>
           <RotateCcw className="size-4" /> Re-read
         </Button>
       )}

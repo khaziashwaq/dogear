@@ -1,6 +1,6 @@
 import "server-only";
 import { z } from "zod";
-import { AuthError, NotFoundError, ValidationError } from "@/lib/data/store";
+import { AuthError, NotFoundError, RateLimitError, ValidationError } from "@/lib/data/store";
 import type { Result } from "@/lib/action-result";
 import { getOpenLibraryWork } from "@/lib/openlibrary";
 import type { DataStore } from "@/lib/data/store";
@@ -11,7 +11,7 @@ export async function run<T>(fn: () => Promise<T>): Promise<Result<T>> {
     return { ok: true, data: await fn() };
   } catch (e) {
     if (e instanceof z.ZodError) return { ok: false, error: e.issues[0]?.message ?? "Please check the form." };
-    if (e instanceof AuthError || e instanceof NotFoundError || e instanceof ValidationError) return { ok: false, error: e.message };
+    if (e instanceof AuthError || e instanceof NotFoundError || e instanceof ValidationError || e instanceof RateLimitError) return { ok: false, error: e.message };
     // Next.js control-flow errors (redirect/notFound) must propagate.
     if (e && typeof e === "object" && "digest" in e) throw e;
     console.error("[dogear action]", e);

@@ -79,6 +79,12 @@ export interface NotificationRow {
   listId: string | null; recommendationId: string | null; readAt: string | null; createdAt: string;
 }
 
+export interface BlockRow { blockerId: string; blockedId: string; createdAt: string }
+export interface MuteRow { muterId: string; mutedId: string; createdAt: string }
+export interface ReportRow {
+  id: string; reporterId: string; targetType: string; targetId: string; reason: string; details: string | null; status: string; createdAt: string;
+}
+
 export interface DemoDB {
   version: number;
   secret: string;
@@ -99,6 +105,10 @@ export interface DemoDB {
   bookmarks: LikeRow[];
   recommendations: RecommendationRow[];
   notifications: NotificationRow[];
+  // Safety — optional so demo data saved before they existed still loads (filled in on load).
+  blocks?: BlockRow[];
+  mutes?: MuteRow[];
+  reports?: ReportRow[];
 }
 
 const DB_VERSION = 3;
@@ -112,8 +122,17 @@ export function hashPassword(password: string, salt = randomBytes(16).toString("
 export const newId = () => randomUUID();
 
 // ── notifications, shared by the seeder and the store ─────────────────
+const ONCE = new Set(["like", "follow", "repost", "list_follow"]);
+
+/** Same rule as the database: one like / follow / repost / list-follow notification per actor and target. */
 export function pushNotification(db: DemoDB, n: Omit<NotificationRow, "id" | "readAt" | "createdAt"> & { createdAt?: string }) {
   if (n.recipientId === n.actorId) return;
+  if (
+    ONCE.has(n.kind) &&
+    db.notifications.some((x) => x.kind === n.kind && x.recipientId === n.recipientId && x.actorId === n.actorId && x.postId === n.postId && x.listId === n.listId)
+  ) {
+    return;
+  }
   db.notifications.push({ id: newId(), readAt: null, ...n, createdAt: n.createdAt ?? new Date().toISOString() });
 }
 
@@ -130,6 +149,7 @@ export function buildSeed(): DemoDB {
     version: DB_VERSION, secret: randomBytes(32).toString("hex"),
     users: [], profiles: [], follows: [], books: [], userBooks: [], sessions: [], reviews: [], quotes: [], lists: [],
     listBooks: [], listFollows: [], posts: [], comments: [], likes: [], bookmarks: [], recommendations: [], notifications: [],
+    blocks: [], mutes: [], reports: [],
   };
 
   const uid: Record<string, string> = {};
@@ -334,7 +354,12 @@ function load(): DemoDB {
   try {
     if (existsSync(DATA_FILE)) {
       const parsed = JSON.parse(readFileSync(DATA_FILE, "utf8")) as DemoDB;
-      if (parsed.version === DB_VERSION) return parsed;
+      if (parsed.version === DB_VERSION) {
+        parsed.blocks ??= [];
+        parsed.mutes ??= [];
+        parsed.reports ??= [];
+        return parsed;
+      }
     }
   } catch {
     // fall through to a fresh seed

@@ -17,13 +17,15 @@ import { motion, useReducedMotion } from "framer-motion";
 import { MoreHorizontal, Plus } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useRef, useState, useTransition, type ReactNode, type RefObject } from "react";
-import { setShelfStatusAction } from "@/app/actions/books";
+import { setShelfStatusAction, undoShelfMoveAction } from "@/app/actions/books";
 import { BookCover } from "@/components/book/book-cover";
 import { BookPicker } from "@/components/book/book-picker";
 import { BookshelfRow, SpineMark } from "@/components/book/bookshelf";
+import { Button } from "@/components/ui/button";
+import { Dialog } from "@/components/ui/dialog";
 import { useToast } from "@/components/ui/toast";
 import { bookHref, bookRef } from "@/lib/book-ref";
-import type { Book, ShelfStatus, UserBook } from "@/lib/types";
+import type { Book, ShelfMoveOptions, ShelfStatus, ShelfUndo, UserBook } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { ShelfMenu } from "./shelf-menu";
 
@@ -56,6 +58,8 @@ export function HomeShelves({ initial, allShelvesHref }: { initial: Shelves; all
   const [arrived, setArrived] = useState<string | null>(null);
   const [announcement, setAnnouncement] = useState("");
   const [picking, setPicking] = useState(false);
+  // Read → Reading could be a re-read or a slip of the hand; ask which before writing the diary.
+  const [askReread, setAskReread] = useState<UserBook | null>(null);
   const [, start] = useTransition();
   const toast = useToast();
   const reduce = useReducedMotion();
@@ -79,12 +83,27 @@ export function HomeShelves({ initial, allShelvesHref }: { initial: Shelves; all
   );
 
   /** Move a book to a shelf (or off the home shelves). Optimistic, rolled back on failure. */
+  const undo = useCallback(
+    (record: ShelfUndo, title: string) =>
+      start(async () => {
+        const res = await undoShelfMoveAction(record);
+        if (!res.ok) return toast(res.error, "error");
+        setAnnouncement(`${title} put back`);
+        toast(`${title} put back`);
+      }),
+    [toast],
+  );
+
   const move = useCallback(
-    (bookId: string, to: ShelfStatus | null) => {
+    (bookId: string, to: ShelfStatus | null, opts?: ShelfMoveOptions) => {
       const found = locate(bookId);
       if (!found || pending.has(bookId)) return;
       const [from, ub] = found;
       if (from === to) return;
+      if (from === "read" && to === "reading" && !opts) {
+        setAskReread(ub);
+        return;
+      }
 
       setShelves((s) => {
         const next = { ...s, [from]: s[from].filter((b) => b.bookId !== bookId) };
@@ -98,7 +117,7 @@ export function HomeShelves({ initial, allShelvesHref }: { initial: Shelves; all
       setAnnouncement(said);
 
       start(async () => {
-        const res = await setShelfStatusAction(bookRef(ub.book), to);
+        const res = await setShelfStatusAction(bookRef(ub.book), to, opts);
         setPending((p) => {
           const n = new Set(p);
           n.delete(bookId);
@@ -124,10 +143,15 @@ export function HomeShelves({ initial, allShelvesHref }: { initial: Shelves; all
         if (saved && isHome(saved.status)) {
           setShelves((s) => ({ ...s, [saved.status as HomeShelfKey]: s[saved.status as HomeShelfKey].map((b) => (b.bookId === bookId ? { ...b, ...saved, book: b.book } : b)) }));
         }
-        toast(to === "dnf" ? `${ub.book.title}: did not finish` : to ? `On your ${LABEL[to]} shelf` : "Taken off your shelves");
+        const record = res.data.undo;
+        toast(
+          to === "dnf" ? `${ub.book.title}: did not finish` : to ? `On your ${LABEL[to]} shelf` : "Taken off your shelves",
+          "default",
+          record ? { label: "Undo", onClick: () => undo(record, ub.book.title) } : undefined,
+        );
       });
     },
-    [locate, pending, toast],
+    [locate, pending, toast, undo],
   );
 
   const onDragStart = (e: DragStartEvent) => {
@@ -158,7 +182,8 @@ export function HomeShelves({ initial, allShelvesHref }: { initial: Shelves; all
         return next;
       });
       setArrived(saved.id);
-      toast(`${saved.title} is on your Want to read shelf`);
+      const record = res.data.undo;
+      toast(`${saved.title} is on your Want to read shelf`, "default", record ? { label: "Undo", onClick: () => undo(record, saved.title) } : undefined);
     });
   };
 
@@ -218,6 +243,36 @@ export function HomeShelves({ initial, allShelvesHref }: { initial: Shelves; all
       </DragOverlay>
 
       <BookPicker open={picking} onClose={() => setPicking(false)} onPick={add} title="Add a book to Want to read" />
+      <Dialog
+        open={askReread !== null}
+        onClose={() => setAskReread(null)}
+        title={askReread ? `Picking up ${askReread.book.title} again?` : "Picking it up again?"}
+        description="It's on your Read shelf. Tell us which it is so your diary stays right."
+      >
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <Button
+            className="flex-1"
+            onClick={() => {
+              const ub = askReread;
+              setAskReread(null);
+              if (ub) move(ub.bookId, "reading", { reread: true });
+            }}
+          >
+            Yes, a re-read
+          </Button>
+          <Button
+            variant="paper"
+            className="flex-1"
+            onClick={() => {
+              const ub = askReread;
+              setAskReread(null);
+              if (ub) move(ub.bookId, "reading", { reread: false });
+            }}
+          >
+            I hadn&rsquo;t finished it
+          </Button>
+        </div>
+      </Dialog>
     </DndContext>
   );
 }
