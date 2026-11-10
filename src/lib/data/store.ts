@@ -6,6 +6,12 @@ import type {
   BookStats,
   Comment,
   Compatibility,
+  CoShelvedBook,
+  Suggestion,
+  SuggestionInput,
+  SuggestionState,
+  SuggestionStatus,
+  TasteEntry,
   FeedFilter,
   Invite,
   InvitePreview,
@@ -184,6 +190,26 @@ export interface DataStore {
   /** For a newly joined reader: count the invite once and follow whoever sent it. */
   redeemInvite(code: string): Promise<boolean>;
   readingRecap(userId: string, year: number, month: number | null): Promise<ReadingRecap>;
+
+  // ── personalised suggestions (private to the viewer) ───────────────
+  /** The viewer's shelved books with the metadata taste is read from (incl. subject headings). */
+  tasteLibrary(): Promise<TasteEntry[]>;
+  suggestionState(): Promise<SuggestionState | null>;
+  /**
+   * Atomically replace the waiting suggestions (dismissed and added ones are never touched) and record
+   * the library fingerprint they were made from. `items: null` only records an attempt.
+   */
+  saveSuggestions(signature: string | null, items: SuggestionInput[] | null): Promise<void>;
+  /** Waiting suggestions, best first. */
+  listSuggestions(cursor: string | null, limit?: number): Promise<Page<Suggestion>>;
+  getSuggestion(id: string): Promise<Suggestion | null>;
+  setSuggestionStatus(id: string, status: SuggestionStatus): Promise<void>;
+  /** Identifiers ("key:", "ol:", "id:") of suggestions dismissed or added: never suggested again. */
+  closedSuggestionKeys(): Promise<string[]>;
+  /** Books loved by readers who loved the same books as the viewer, not on the viewer's shelves. */
+  coShelvedBooks(limit?: number): Promise<CoShelvedBook[]>;
+  /** Catalogue enrichment (server-side): store a book's cleaned Open Library subject headings. */
+  setBookSubjects(bookId: string, subjects: string[]): Promise<void>;
 
   // ── safety & your data ─────────────────────────────────────────────
   relationship(targetId: string): Promise<Relationship>;

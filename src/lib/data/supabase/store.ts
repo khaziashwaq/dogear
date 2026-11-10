@@ -7,6 +7,12 @@ import type {
   BookStats,
   Comment,
   Compatibility,
+  CoShelvedBook,
+  Suggestion,
+  SuggestionInput,
+  SuggestionState,
+  SuggestionStatus,
+  TasteEntry,
   FeedFilter,
   Invite,
   InvitePreview,
@@ -45,7 +51,7 @@ import type {
 } from "@/lib/types";
 import { normaliseRating, slugify } from "@/lib/utils";
 import { AuthError, NotFoundError, RateLimitError, ValidationError, emptyStats, type DataStore } from "../store";
-import { cleanShelves, sortShelf } from "../shared";
+import { checkSuggestionInputs, cleanShelves, closedKeys, sortShelf, toSuggestion } from "../shared";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type Row = Record<string, any>;
@@ -330,7 +336,7 @@ export class SupabaseStore implements DataStore {
       slug, title: input.title, subtitle: input.subtitle, authors: input.authors, description: input.description,
       cover_url: input.coverUrl, isbn13: input.isbn13, isbn10: input.isbn10, ol_work_id: input.olWorkId, ol_edition_id: input.olEditionId,
       published_year: input.publishedYear, publisher: input.publisher, page_count: input.pageCount, language: input.language,
-      genres: input.genres, moods: input.moods, created_by: me,
+      genres: input.genres, moods: input.moods, subjects: (input.subjects ?? []).slice(0, 30), created_by: me,
     }).select("*").single();
     if (error?.code === "23505" && input.olWorkId) {
       const raced = await this.getBookByOlWorkId(input.olWorkId);
@@ -943,6 +949,77 @@ export class SupabaseStore implements DataStore {
     return mapRecap(data as Row);
   }
 
+  // ── personalised suggestions ────────────────────────────────────────
+  async tasteLibrary(): Promise<TasteEntry[]> {
+    if (!this.viewerId) return [];
+    const { data, error } = await this.sb.from("user_books")
+      .select("status, rating, is_favourite, book:books(id, title, authors, genres, moods, subjects, ol_work_id, isbn13)")
+      .eq("user_id", this.viewerId).not("status", "is", null).limit(2000);
+    fail(error, "Couldn't read your shelves");
+    return ((data ?? []) as Row[]).filter((r) => r.book).map((r) => ({
+      bookId: r.book.id, title: r.book.title, authors: r.book.authors ?? [], genres: r.book.genres ?? [], moods: r.book.moods ?? [],
+      subjects: r.book.subjects ?? [], status: r.status, rating: num(r.rating), favourite: r.is_favourite, olWorkId: r.book.ol_work_id, isbn13: r.book.isbn13,
+    }));
+  }
+  async suggestionState(): Promise<SuggestionState | null> {
+    if (!this.viewerId) return null;
+    const { data, error } = await this.sb.from("suggestion_runs").select("signature, refreshed_at, attempted_at").eq("user_id", this.viewerId).maybeSingle();
+    fail(error, "Couldn't read your suggestions");
+    return data ? { signature: data.signature, refreshedAt: data.refreshed_at, attemptedAt: data.attempted_at } : null;
+  }
+  async saveSuggestions(signature: string | null, items: SuggestionInput[] | null) {
+    this.me();
+    const { error } = await this.sb.rpc("save_suggestions", { p_signature: signature, p_items: items == null ? null : checkSuggestionInputs(items) });
+    fail(error, "Couldn't save your suggestions");
+  }
+  private suggestion(r: Row): Suggestion {
+    return toSuggestion({
+      id: r.id, workKey: r.work_key, bookId: r.book_id, book: r.book, score: num(r.score) ?? 0, reasons: r.reasons, sourceBookIds: r.source_book_ids ?? [],
+      status: r.status, createdAt: r.created_at,
+    });
+  }
+  async listSuggestions(cursor: string | null, limit = 12) {
+    if (!this.viewerId) return { items: [], nextCursor: null };
+    const offset = Math.max(0, Number(cursor) || 0);
+    const { data, error } = await this.sb.from("book_suggestions").select("*").eq("user_id", this.viewerId).eq("status", "suggested")
+      .order("score", { ascending: false }).order("id").range(offset, offset + limit);
+    fail(error, "Couldn't load your suggestions");
+    const rows = (data ?? []) as Row[];
+    return { items: rows.slice(0, limit).map((r) => this.suggestion(r)), nextCursor: rows.length > limit ? String(offset + limit) : null };
+  }
+  async getSuggestion(id: string) {
+    if (!this.viewerId) return null;
+    const { data, error } = await this.sb.from("book_suggestions").select("*").eq("id", id).eq("user_id", this.viewerId).maybeSingle();
+    fail(error);
+    return data ? this.suggestion(data) : null;
+  }
+  async setSuggestionStatus(id: string, status: SuggestionStatus) {
+    const { data, error } = await this.sb.from("book_suggestions").update({ status }).eq("id", id).eq("user_id", this.me()).select("id");
+    fail(error, "Couldn't update that suggestion");
+    if (!data?.length) throw new NotFoundError("That suggestion is gone.");
+  }
+  async closedSuggestionKeys() {
+    if (!this.viewerId) return [];
+    const { data, error } = await this.sb.from("book_suggestions").select("work_key, book_id, ol_work_id")
+      .eq("user_id", this.viewerId).neq("status", "suggested").limit(5000);
+    fail(error);
+    return closedKeys(((data ?? []) as Row[]).map((r) => ({ workKey: r.work_key, bookId: r.book_id, olWorkId: r.ol_work_id })));
+  }
+  async coShelvedBooks(limit = 30): Promise<CoShelvedBook[]> {
+    if (!this.viewerId) return [];
+    const { data, error } = await this.sb.rpc("co_shelved_books", { p_limit: limit });
+    fail(error, "Couldn't look up readers with shelves like yours");
+    return ((data ?? []) as Row[]).map((r) => ({ book: mapBook(r.book), subjects: r.book.subjects ?? [], readers: r.readers, viaBookIds: r.via ?? [] }));
+  }
+  async setBookSubjects(bookId: string, subjects: string[]) {
+    this.me();
+    // Catalogue write: server-only, from headings the server fetched from Open Library itself. Only fills a gap.
+    const { supabaseAdmin } = await import("@/lib/supabase/admin");
+    const clean = subjects.filter((x) => typeof x === "string" && x.length <= 48).slice(0, 30);
+    const { error } = await supabaseAdmin().from("books").update({ subjects: clean }).eq("id", bookId).eq("subjects", "{}");
+    fail(error, "Couldn't store subject headings");
+  }
+
   // ── safety & your data ──────────────────────────────────────────────
   async relationship(targetId: string): Promise<Relationship> {
     if (!this.viewerId || targetId === this.viewerId) return { following: false, blocked: false, muted: false };
@@ -995,7 +1072,7 @@ export class SupabaseStore implements DataStore {
       fail(error, "Couldn't export your data");
       return data ?? [];
     });
-    const [profile, shelves, diary, reviews, annotations, lists, listBooks, posts, comments, likes, bookmarks, following, followers, passesSent, passesReceived, blocks, mutes, reports] = await Promise.all([
+    const [profile, shelves, diary, reviews, annotations, lists, listBooks, posts, comments, likes, bookmarks, following, followers, passesSent, passesReceived, blocks, mutes, reports, suggestions] = await Promise.all([
       all(this.sb.from("profiles").select("*").eq("id", me)),
       all(this.sb.from("user_books").select("*, book:books(title, authors, isbn13, ol_work_id)").eq("user_id", me)),
       all(this.sb.from("reading_sessions").select("*, book:books(title, authors)").eq("user_id", me)),
@@ -1014,10 +1091,11 @@ export class SupabaseStore implements DataStore {
       all(this.sb.from("blocks").select("*").eq("blocker_id", me)),
       all(this.sb.from("mutes").select("*").eq("muter_id", me)),
       all(this.sb.from("reports").select("*").eq("reporter_id", me)),
+      all(this.sb.from("book_suggestions").select("work_key, book, status, reasons, created_at").eq("user_id", me)),
     ]);
     return {
       exportedAt: new Date().toISOString(), profile: profile[0] ?? null, shelves, diary, reviews, annotations, lists, listBooks, posts,
-      comments, likes, bookmarks, following, followers, passesSent, passesReceived, blocks, mutes, reports,
+      comments, likes, bookmarks, following, followers, passesSent, passesReceived, blocks, mutes, reports, suggestions,
     };
   }
   async deleteMyAccount() {

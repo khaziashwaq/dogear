@@ -41,6 +41,8 @@ export interface BookRow {
   id: string; slug: string; title: string; subtitle: string | null; authors: string[]; description: string | null; coverUrl: string | null;
   isbn13: string | null; isbn10: string | null; olWorkId: string | null; olEditionId: string | null; publishedYear: number | null;
   publisher: string | null; pageCount: number | null; language: string | null; genres: string[]; moods: string[]; createdAt: string;
+  /** Cleaned Open Library subject headings (optional: older demo data has none). */
+  subjects?: string[];
 }
 export interface UserBookRow {
   id: string; userId: string; bookId: string; status: ShelfStatus | null; rating: number | null; isFavourite: boolean; favouritedAt: string | null;
@@ -87,6 +89,11 @@ export interface ReportRow {
 
 export interface InviteRow { code: string; inviterId: string; createdAt: string; expiresAt: string | null; maxUses: number | null; uses: number }
 export interface RedemptionRow { inviteeId: string; code: string; createdAt: string }
+export interface SuggestionRow {
+  id: string; userId: string; workKey: string; bookId: string | null; olWorkId: string | null; book: Record<string, unknown>; score: number;
+  reasons: unknown[]; sourceBookIds: string[]; status: "suggested" | "dismissed" | "added"; createdAt: string; updatedAt: string;
+}
+export interface SuggestionRunRow { userId: string; signature: string | null; refreshedAt: string | null; attemptedAt: string }
 
 export interface DemoDB {
   version: number;
@@ -114,6 +121,8 @@ export interface DemoDB {
   reports?: ReportRow[];
   invites?: InviteRow[];
   redemptions?: RedemptionRow[];
+  suggestions?: SuggestionRow[];
+  suggestionRuns?: SuggestionRunRow[];
 }
 
 const DB_VERSION = 3;
@@ -154,7 +163,7 @@ export function buildSeed(): DemoDB {
     version: DB_VERSION, secret: randomBytes(32).toString("hex"),
     users: [], profiles: [], follows: [], books: [], userBooks: [], sessions: [], reviews: [], quotes: [], lists: [],
     listBooks: [], listFollows: [], posts: [], comments: [], likes: [], bookmarks: [], recommendations: [], notifications: [],
-    blocks: [], mutes: [], reports: [], invites: [], redemptions: [],
+    blocks: [], mutes: [], reports: [], invites: [], redemptions: [], suggestions: [], suggestionRuns: [],
   };
 
   const uid: Record<string, string> = {};
@@ -365,6 +374,8 @@ function load(): DemoDB {
         parsed.reports ??= [];
         parsed.invites ??= [];
         parsed.redemptions ??= [];
+        parsed.suggestions ??= [];
+        parsed.suggestionRuns ??= [];
         return parsed;
       }
     }

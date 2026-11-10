@@ -7,6 +7,7 @@ import { bookRef } from "@/lib/book-ref";
 import { getOpenLibraryByIsbn, searchOpenLibrary } from "@/lib/openlibrary";
 import { resolveBook, run } from "@/lib/server-action";
 import type { SavedBook } from "@/lib/types";
+import { refreshSuggestionsSoon } from "@/lib/suggestions/trigger";
 
 const row = z.object({
   title: z.string().trim().min(1).max(300),
@@ -59,5 +60,9 @@ export async function importGoodreadsRowAction(input: z.input<typeof row>, overw
 
 /** Once an import finishes: refresh shelves, stats and recaps. */
 export async function finishImportAction() {
-  return run(async () => revalidatePath("/", "layout"));
+  return run(async () => {
+    revalidatePath("/", "layout");
+    // Once per import, not per row: the whole new library feeds one rebuild.
+    refreshSuggestionsSoon();
+  });
 }

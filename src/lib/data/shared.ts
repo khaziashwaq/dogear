@@ -1,4 +1,4 @@
-import type { ProfileStats, ReadingRecap, SavedBook, ShelfQuery, UserBook } from "@/lib/types";
+import type { ProfileStats, ReadingRecap, SavedBook, ShelfQuery, Suggestion, SuggestionInput, SuggestionReason, SuggestionStatus, UserBook } from "@/lib/types";
 import { computeHistogram } from "./store";
 
 // Pure helpers used by both backends.
@@ -155,4 +155,46 @@ export function similarityScore(o: { sharedBooks: number; diff: number | null; s
       15 * Math.min(1, o.sharedGenres / 3) +
       10 * Math.min(1, o.sharedFavourites),
   );
+}
+
+// ── suggestions ──────────────────────────────────────────────────────
+const strs = (v: unknown, max: number) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string").slice(0, max) : []);
+const str = (v: unknown) => (typeof v === "string" && v ? v : null);
+const COVER = /^https:\/\/covers\.openlibrary\.org\/b\/(id|isbn|olid)\/[A-Za-z0-9-]+\.jpg(\?default=false)?$/;
+
+/** A stored suggestion's book copy, made safe and complete (it's JSON, so never trust its shape). */
+export function suggestionBook(raw: unknown, bookId: string | null): Suggestion["book"] {
+  const b = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const cover = str(b.coverUrl);
+  const slug = str(b.slug);
+  return {
+    id: bookId ?? str(b.id), slug: slug && /^[a-z0-9-]{1,120}$/.test(slug) ? slug : null, title: str(b.title) ?? "Untitled", subtitle: null,
+    authors: strs(b.authors, 4), description: null, coverUrl: cover && COVER.test(cover) ? cover : null, isbn13: str(b.isbn13), isbn10: null,
+    olWorkId: str(b.olWorkId) && /^OL\d+W$/.test(b.olWorkId as string) ? (b.olWorkId as string) : null,
+    olEditionId: str(b.olEditionId) && /^OL\d+M$/.test(b.olEditionId as string) ? (b.olEditionId as string) : null,
+    publishedYear: typeof b.publishedYear === "number" ? b.publishedYear : null, publisher: null, pageCount: null, language: null,
+    genres: strs(b.genres, 4), moods: strs(b.moods, 3), subjects: strs(b.subjects, 4),
+  };
+}
+
+export function toSuggestion(r: {
+  id: string; workKey: string; bookId: string | null; book: unknown; score: number; reasons: unknown; sourceBookIds: string[];
+  status: SuggestionStatus; createdAt: string;
+}): Suggestion {
+  return {
+    id: r.id, workKey: r.workKey, book: suggestionBook(r.book, r.bookId), score: Number(r.score),
+    reasons: (Array.isArray(r.reasons) ? r.reasons : []) as SuggestionReason[], sourceBookIds: r.sourceBookIds ?? [],
+    status: r.status, createdAt: r.createdAt,
+  };
+}
+
+/** The identifiers a closed (dismissed or added) suggestion blocks from coming back. */
+export function closedKeys(rows: { workKey: string; bookId: string | null; olWorkId: string | null }[]): string[] {
+  return rows.flatMap((r) => [`key:${r.workKey}`, r.bookId ? `id:${r.bookId}` : null, r.olWorkId ? `ol:${r.olWorkId}` : null].filter((x): x is string => Boolean(x)));
+}
+
+/** Server-side guard for anything saved as a suggestion (mirrors the table's checks). */
+export function checkSuggestionInputs(items: SuggestionInput[]): SuggestionInput[] {
+  if (items.length > 60) throw new Error("A suggestion list holds at most 60 books.");
+  return items.map((i) => ({ ...i, score: Math.max(0, Math.min(1, Math.round(i.score * 10000) / 10000)), sourceBookIds: i.sourceBookIds.slice(0, 10) }));
 }

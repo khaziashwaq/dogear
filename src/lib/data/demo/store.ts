@@ -42,11 +42,17 @@ import type {
   UpdatePostInput,
   UserBook,
   Visibility,
+  CoShelvedBook,
+  Suggestion,
+  SuggestionInput,
+  SuggestionState,
+  SuggestionStatus,
+  TasteEntry,
 } from "@/lib/types";
 import { normaliseRating, slugify } from "@/lib/utils";
 import { AuthError, NotFoundError, ValidationError, computeHistogram, type DataStore } from "../store";
 import { removeDemoUploads } from "./uploads";
-import { buildRecap, buildStats, cleanShelves, compatibilityScore, similarityScore, sortShelf } from "../shared";
+import { buildRecap, buildStats, checkSuggestionInputs, cleanShelves, closedKeys, compatibilityScore, similarityScore, sortShelf, toSuggestion } from "../shared";
 import {
   getDemoDB,
   newId,
@@ -1261,6 +1267,119 @@ export class DemoStore implements DataStore {
     };
   }
 
+  // ── personalised suggestions ────────────────────────────────────────
+  // Same rules as the Supabase tables: private to the reader, dismissed/added never touched by a refresh.
+  async tasteLibrary(): Promise<TasteEntry[]> {
+    if (!this.viewerId) return [];
+    const me = this.viewerId;
+    return this.db.userBooks
+      .filter((u) => u.userId === me && u.status)
+      .flatMap((u) => {
+        const b = this.db.books.find((x) => x.id === u.bookId);
+        if (!b) return [];
+        return [{
+          bookId: b.id, title: b.title, authors: b.authors, genres: b.genres, moods: b.moods, subjects: b.subjects ?? [],
+          status: u.status!, rating: u.rating, favourite: u.isFavourite, olWorkId: b.olWorkId, isbn13: b.isbn13,
+        }];
+      });
+  }
+  async suggestionState(): Promise<SuggestionState | null> {
+    if (!this.viewerId) return null;
+    const r = (this.db.suggestionRuns ??= []).find((x) => x.userId === this.viewerId);
+    return r ? { signature: r.signature, refreshedAt: r.refreshedAt, attemptedAt: r.attemptedAt } : null;
+  }
+  async saveSuggestions(signature: string | null, items: SuggestionInput[] | null) {
+    const me = this.me();
+    const runs = (this.db.suggestionRuns ??= []);
+    let run = runs.find((x) => x.userId === me);
+    if (!run) runs.push((run = { userId: me, signature: null, refreshedAt: null, attemptedAt: nowIso() }));
+    run.attemptedAt = nowIso();
+    if (items == null) return this.commit();
+    const clean = checkSuggestionInputs(items);
+    const all = (this.db.suggestions ??= []);
+    // Anything waiting that has since been shelved counts as added.
+    const shelved = this.db.userBooks.filter((u) => u.userId === me && u.status);
+    const shelvedOl = new Set(shelved.map((u) => this.db.books.find((b) => b.id === u.bookId)?.olWorkId).filter(Boolean));
+    for (const sg of all) {
+      if (sg.userId !== me || sg.status !== "suggested") continue;
+      if (shelved.some((u) => u.bookId === sg.bookId) || (sg.olWorkId && shelvedOl.has(sg.olWorkId))) {
+        sg.status = "added";
+        sg.updatedAt = nowIso();
+      }
+    }
+    const keep = new Set(clean.map((i) => i.workKey));
+    this.db.suggestions = all.filter((sg) => sg.userId !== me || sg.status !== "suggested" || keep.has(sg.workKey));
+    for (const i of clean) {
+      const prev = this.db.suggestions.find((sg) => sg.userId === me && sg.workKey === i.workKey);
+      if (prev && prev.status !== "suggested") continue;
+      const fields = { bookId: i.bookId, olWorkId: i.olWorkId, book: i.book as unknown as Record<string, unknown>, score: i.score, reasons: i.reasons, sourceBookIds: i.sourceBookIds };
+      if (prev) Object.assign(prev, fields, { updatedAt: nowIso() });
+      else this.db.suggestions.push({ id: newId(), userId: me, workKey: i.workKey, ...fields, status: "suggested", createdAt: nowIso(), updatedAt: nowIso() });
+    }
+    run.signature = signature;
+    run.refreshedAt = nowIso();
+    this.commit();
+  }
+  async listSuggestions(cursor: string | null, limit = 12) {
+    if (!this.viewerId) return { items: [], nextCursor: null };
+    const offset = Math.max(0, Number(cursor) || 0);
+    const rows = (this.db.suggestions ??= [])
+      .filter((sg) => sg.userId === this.viewerId && sg.status === "suggested")
+      .sort((a, b) => b.score - a.score || (a.id < b.id ? -1 : 1));
+    const items = rows.slice(offset, offset + limit).map(toSuggestion);
+    return { items, nextCursor: offset + limit < rows.length ? String(offset + limit) : null };
+  }
+  async getSuggestion(id: string): Promise<Suggestion | null> {
+    const row = (this.db.suggestions ??= []).find((sg) => sg.id === id && sg.userId === this.viewerId);
+    return row ? toSuggestion(row) : null;
+  }
+  async setSuggestionStatus(id: string, status: SuggestionStatus) {
+    const me = this.me();
+    const row = (this.db.suggestions ??= []).find((sg) => sg.id === id && sg.userId === me);
+    if (!row) throw new NotFoundError("That suggestion is gone.");
+    row.status = status;
+    row.updatedAt = nowIso();
+    this.commit();
+  }
+  async closedSuggestionKeys() {
+    if (!this.viewerId) return [];
+    return closedKeys((this.db.suggestions ??= []).filter((sg) => sg.userId === this.viewerId && sg.status !== "suggested"));
+  }
+  async coShelvedBooks(limit = 30): Promise<CoShelvedBook[]> {
+    if (!this.viewerId) return [];
+    const me = this.viewerId;
+    const positive = (r: number | null, min: number) => (r ?? 4) >= min;
+    const mine = this.db.userBooks.filter((u) => u.userId === me && u.status);
+    const liked = new Set(mine.filter((u) => u.status !== "dnf" && positive(u.rating, 3.5)).map((u) => u.bookId));
+    const owned = new Set(mine.map((u) => u.bookId));
+    const visible = this.db.userBooks.filter((u) => u.userId !== me && !this.blockedBetween(u.userId, me) && (u.status === "read" || u.status === "reading"));
+    const overlap = new Map<string, string[]>();
+    for (const u of visible) if (liked.has(u.bookId) && positive(u.rating, 3.5)) overlap.set(u.userId, [...(overlap.get(u.userId) ?? []), u.bookId]);
+    const neighbours = [...overlap.entries()].sort((a, b) => b[1].length - a[1].length || (a[0] < b[0] ? -1 : 1)).slice(0, 60);
+    const picks = new Map<string, { readers: Set<string>; via: Set<string> }>();
+    for (const [userId, via] of neighbours) {
+      for (const u of visible) {
+        if (u.userId !== userId || owned.has(u.bookId) || !positive(u.rating, 4)) continue;
+        const p = picks.get(u.bookId) ?? { readers: new Set<string>(), via: new Set<string>() };
+        p.readers.add(userId);
+        via.forEach((v) => p.via.add(v));
+        picks.set(u.bookId, p);
+      }
+    }
+    return [...picks.entries()]
+      .map(([bookId, p]) => ({ row: this.db.books.find((b) => b.id === bookId)!, p }))
+      .filter((x) => x.row)
+      .sort((a, b) => b.p.readers.size - a.p.readers.size || a.row.title.localeCompare(b.row.title))
+      .slice(0, Math.min(Math.max(limit, 1), 60))
+      .map(({ row, p }) => ({ book: toBook(row), subjects: row.subjects ?? [], readers: p.readers.size, viaBookIds: [...p.via].sort().slice(0, 3) }));
+  }
+  async setBookSubjects(bookId: string, subjects: string[]) {
+    const row = this.db.books.find((b) => b.id === bookId);
+    if (!row || (row.subjects?.length ?? 0) > 0) return;
+    row.subjects = subjects.filter((x) => typeof x === "string" && x.length <= 48).slice(0, 30);
+    this.commit();
+  }
+
   // ── safety & your data ──────────────────────────────────────────────
   async relationship(targetId: string): Promise<Relationship> {
     const me = this.viewerId;
@@ -1343,6 +1462,7 @@ export class DemoStore implements DataStore {
       blocks: (db.blocks ?? []).filter((b) => b.blockerId === me),
       mutes: (db.mutes ?? []).filter((m) => m.muterId === me),
       reports: (db.reports ?? []).filter((r) => r.reporterId === me),
+      suggestions: (db.suggestions ?? []).filter((x) => x.userId === me).map(({ workKey, book, status, reasons, createdAt }) => ({ workKey, title: book.title, status, reasons, createdAt })),
     };
   }
   async deleteMyAccount() {
@@ -1371,6 +1491,8 @@ export class DemoStore implements DataStore {
     db.blocks = (db.blocks ?? []).filter((b) => b.blockerId !== me && b.blockedId !== me);
     db.mutes = (db.mutes ?? []).filter((m) => m.muterId !== me && m.mutedId !== me);
     db.reports = (db.reports ?? []).filter((r) => r.reporterId !== me);
+    db.suggestions = (db.suggestions ?? []).filter((x) => x.userId !== me);
+    db.suggestionRuns = (db.suggestionRuns ?? []).filter((x) => x.userId !== me);
     db.profiles = db.profiles.filter((p) => p.id !== me);
     db.users = db.users.filter((u) => u.id !== me);
     removeDemoUploads(me);

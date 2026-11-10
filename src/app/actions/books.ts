@@ -5,6 +5,7 @@ import { z } from "zod";
 import { getStore } from "@/lib/auth";
 import { resolveBook, run, type BookRefInput } from "@/lib/server-action";
 import { searchOpenLibrary } from "@/lib/openlibrary";
+import { refreshSuggestionsSoon } from "@/lib/suggestions/trigger";
 import type { Book, ShelfStatus } from "@/lib/types";
 
 const status = z.enum(["want_to_read", "reading", "read", "dnf"]).nullable();
@@ -34,6 +35,7 @@ export async function setShelfStatusAction(ref: BookRefInput, value: ShelfStatus
     const book = await resolveBook(store, ref);
     const move = await store.setShelfStatus(book.id, status.parse(value), moveOptions.parse(opts));
     touch(book.slug);
+    if (move.changed) refreshSuggestionsSoon();
     return { book, ...move };
   });
 }
@@ -58,6 +60,7 @@ export async function logBookAction(ref: BookRefInput, input: z.input<typeof log
     const book = await resolveBook(store, ref);
     const result = await store.logBook({ bookId: book.id, ...logSchema.parse(input) });
     touch(book.slug);
+    refreshSuggestionsSoon();
     return { book, result, userBook: await store.getUserBook(book.id) };
   });
 }
@@ -69,6 +72,7 @@ export async function undoShelfMoveAction(undo: Record<string, unknown>) {
     const record = z.record(z.string(), z.unknown()).refine((r) => typeof r.book_id === "string", "Nothing to undo").parse(undo);
     const userBook = await store.undoShelfMove(record);
     revalidatePath("/", "layout");
+    refreshSuggestionsSoon();
     return { userBook };
   });
 }
@@ -79,6 +83,7 @@ export async function setRatingAction(ref: BookRefInput, rating: number | null) 
     const book = await resolveBook(store, ref);
     const ub = await store.setRating(book.id, z.number().min(0).max(5).nullable().parse(rating));
     touch(book.slug);
+    refreshSuggestionsSoon();
     return { book, userBook: ub };
   });
 }

@@ -85,6 +85,8 @@ export interface Book {
   language: string | null;
   genres: string[];
   moods: string[];
+  /** Cleaned Open Library subject headings (themes, settings, forms), when known. Used for suggestions. */
+  subjects?: string[];
 }
 
 /** A book that definitely exists in our catalogue. */
@@ -507,4 +509,68 @@ export interface UpdatePostInput {
   progressPercent: number | null;
   kind: "update" | "recommendation";
   visibility: Visibility;
+}
+
+// ── personalised suggestions ─────────────────────────────────────────
+export type SuggestionStatus = "suggested" | "dismissed" | "added";
+
+/** Why a book was suggested. Each kind names the metadata that actually matched. */
+export type SuggestionReason =
+  | { kind: "author"; author: string; bookId: string | null; title: string | null; verb: "loved" | "read" | "are reading" | "saved" | "favourite"; count: number }
+  | { kind: "themes"; bookId: string; title: string; shared: string[] }
+  | { kind: "genre"; genre: string; count: number; verb: "read" | "add" | "favourite" }
+  | { kind: "readers"; count: number; bookId: string | null; title: string | null }
+  | { kind: "subject"; subject: string; count: number };
+
+export interface Suggestion {
+  id: string;
+  /** The logical book (title + author), the same across editions. */
+  workKey: string;
+  /** A copy of the book as found, so the list renders without further lookups. `id` is set once it's in the catalogue. */
+  book: Book & { subjects: string[] };
+  score: number;
+  reasons: SuggestionReason[];
+  sourceBookIds: string[];
+  status: SuggestionStatus;
+  createdAt: string;
+}
+
+export interface SuggestionInput {
+  workKey: string;
+  bookId: string | null;
+  olWorkId: string | null;
+  book: Suggestion["book"];
+  score: number;
+  reasons: SuggestionReason[];
+  sourceBookIds: string[];
+}
+
+export interface SuggestionState {
+  /** Fingerprint of the shelves the current suggestions were made from. */
+  signature: string | null;
+  refreshedAt: string | null;
+  attemptedAt: string | null;
+}
+
+/** One shelved book, with just what the suggestion engine reads. */
+export interface TasteEntry {
+  bookId: string;
+  title: string;
+  authors: string[];
+  genres: string[];
+  moods: string[];
+  subjects: string[];
+  status: ShelfStatus;
+  rating: number | null;
+  favourite: boolean;
+  olWorkId: string | null;
+  isbn13: string | null;
+}
+
+/** A book Dogear readers loved alongside books on your shelves. */
+export interface CoShelvedBook {
+  book: SavedBook;
+  subjects: string[];
+  readers: number;
+  viaBookIds: string[];
 }

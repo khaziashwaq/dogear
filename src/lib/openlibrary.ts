@@ -1,6 +1,7 @@
 import "server-only";
 import type { Book, BookInput } from "@/lib/types";
 import { subjectsToMoods } from "@/lib/moods";
+import { displayTitle, normSubjects } from "@/lib/suggestions/engine";
 import { coverFromId } from "@/lib/utils";
 
 // Open Library API — https://openlibrary.org/developers/api
@@ -175,7 +176,7 @@ export async function getOpenLibraryWork(olWorkId: string, olEditionId?: string 
   const coverId = ed?.covers?.find((c) => c > 0) ?? work.covers?.find((c) => c > 0) ?? doc?.cover_i;
   const pages = ed?.number_of_pages ?? doc?.number_of_pages_median;
   return {
-    title: ed?.title ?? work.title,
+    title: displayTitle(ed?.title ?? work.title),
     subtitle: ed ? ed.subtitle ?? null : work.subtitle ?? null,
     authors,
     description: description ? cleanDescription(description) : null,
@@ -190,6 +191,7 @@ export async function getOpenLibraryWork(olWorkId: string, olEditionId?: string 
     language: ed ? (ed.languages?.[0]?.key === "/languages/eng" ? "English" : null) : doc?.language?.[0] === "eng" ? "English" : null,
     genres: subjectsToGenres(work.subjects),
     moods: subjectsToMoods(work.subjects),
+    subjects: normSubjects(work.subjects ?? [], 30),
   };
 }
 
@@ -213,4 +215,109 @@ export async function getOpenLibraryByIsbn(isbn: string): Promise<BookInput | nu
   const book = await getOpenLibraryWork(work, editionId);
   if (book && clean.length === 13 && !book.isbn13) book.isbn13 = clean;
   return book;
+}
+
+// ── suggestions ──────────────────────────────────────────────────────
+// Candidate discovery for personalised suggestions. Each returns null when Open Library couldn't be
+// reached (so a failure is never mistaken for "nothing found"), and is cached for a day: the same
+// subject or author is fetched once for every reader who shares it.
+
+export interface OpenLibraryWorkSummary {
+  olWorkId: string;
+  olEditionId: string | null;
+  title: string;
+  authors: string[];
+  coverUrl: string | null;
+  publishedYear: number | null;
+  editionCount: number;
+  /** Raw subject headings (clean them with normSubjects). */
+  subjects: string[];
+}
+
+/** Open Library subject slugs for Dogear's genre names, where they differ. */
+const GENRE_SUBJECT: Record<string, string> = {
+  "sci-fi": "science_fiction",
+  "dark academia": "campus_fiction",
+  "contemporary": "domestic_fiction",
+  "essays": "essays",
+};
+
+export function subjectSlug(subject: string): string {
+  const s = subject.toLowerCase().trim();
+  return GENRE_SUBJECT[s] ?? s.replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+}
+
+/** The most widely read works under one subject heading. */
+export async function openLibrarySubjectWorks(subject: string, limit = 24): Promise<OpenLibraryWorkSummary[] | null> {
+  const slug = subjectSlug(subject);
+  if (!slug) return [];
+  const data = await getJson<{ works?: { key: string; title: string; authors?: { name: string }[]; cover_id?: number | null; cover_edition_key?: string | null; first_publish_year?: number | null; edition_count?: number; subject?: string[] }[] }>(
+    `/subjects/${encodeURIComponent(slug)}.json?limit=${Math.min(limit, 40)}`,
+    86_400,
+  );
+  if (!data) return null;
+  return (data.works ?? [])
+    .filter((w) => w.key?.startsWith("/works/"))
+    .map((w) => ({
+      olWorkId: w.key.replace("/works/", ""),
+      olEditionId: w.cover_edition_key?.match(/^OL\d+M$/)?.[0] ?? null,
+      title: w.title,
+      authors: (w.authors ?? []).map((a) => a.name).slice(0, 3),
+      coverUrl: w.cover_id ? coverFromId(w.cover_id) : null,
+      publishedYear: w.first_publish_year ?? null,
+      editionCount: w.edition_count ?? 0,
+      subjects: (w.subject ?? []).slice(0, 40),
+    }));
+}
+
+/**
+ * An author's most widely read works, in English editions where Open Library has them. Author names
+ * in the index are sometimes in the original script (村上春樹), so the name searched for is kept.
+ */
+export async function openLibraryAuthorWorks(author: string, limit = 12): Promise<OpenLibraryWorkSummary[] | null> {
+  const name = author.trim();
+  if (!name) return [];
+  const fields = "key,title,author_name,cover_i,first_publish_year,edition_count,subject,cover_edition_key,editions,editions.key,editions.title,editions.cover_i";
+  const data = await getJson<{ docs?: (SearchDoc & { edition_count?: number })[] }>(
+    `/search.json?author=${encodeURIComponent(name)}&sort=editions&lang=en&limit=${Math.min(limit, 20)}&fields=${fields}`,
+    86_400,
+  );
+  if (!data) return null;
+  const want = name.toLowerCase();
+  return (data.docs ?? [])
+    .filter((d) => d.key?.startsWith("/works/"))
+    .map((d) => {
+      const ed = d.editions?.docs?.[0];
+      const others = (d.author_name ?? []).filter((a) => /[a-z]/i.test(a) && a.toLowerCase() !== want);
+      return {
+        olWorkId: d.key.replace("/works/", ""),
+        olEditionId: ed?.key?.match(/OL\d+M/)?.[0] ?? d.cover_edition_key ?? null,
+        title: englishTitle(ed?.title, d.title),
+        authors: [name, ...others].slice(0, 3),
+        coverUrl: ed?.cover_i ? coverFromId(ed.cover_i) : d.cover_i ? coverFromId(d.cover_i) : null,
+        publishedYear: d.first_publish_year ?? null,
+        editionCount: d.edition_count ?? 0,
+        subjects: (d.subject ?? []).slice(0, 40),
+      };
+    });
+}
+
+const ENGLISH = /\b(the|of|and|a|an|in|to|on|with|for|from|my|his|her)\b/gi;
+/**
+ * Between an edition's title and the work's, the one that reads as English. Works are often filed under
+ * the original language (Преступление и наказание), and "lang=en" can still match a translation
+ * (Der Sündenbock - Roman): prefer Latin script, then English small words, then the edition.
+ */
+export function englishTitle(edition: string | undefined, work: string): string {
+  const score = (t: string) => (/[^\u0000-\u024f\s\p{P}\p{N}]/u.test(t) ? -10 : 0) + (t.match(ENGLISH)?.length ?? 0) - (/\b(roman|novela|romanzo)\b/i.test(t) ? 5 : 0);
+  if (!edition) return displayTitle(work);
+  return displayTitle(score(work) > score(edition) ? work : edition);
+}
+
+/** A work's subject headings, cleaned; for catalogue books added before subjects were stored. */
+export async function openLibraryWorkSubjects(olWorkId: string): Promise<string[] | null> {
+  if (!/^OL\d+W$/.test(olWorkId)) return [];
+  const work = await getJson<WorkJson>(`/works/${olWorkId}.json`, 86_400);
+  if (!work) return null;
+  return normSubjects(work.subjects ?? [], 30);
 }

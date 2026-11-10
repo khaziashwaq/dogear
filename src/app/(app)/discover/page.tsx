@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { Suspense } from "react";
 import { BookshelfRow, SpineMark } from "@/components/book/bookshelf";
 import { DiscoverTile } from "@/components/feed/discover-tile";
 import { ListCard } from "@/components/list/list-card";
@@ -10,6 +11,7 @@ import { Sparkle } from "@/components/ui/doodles";
 import { EmptyState } from "@/components/ui/empty-state";
 import { SectionHeading } from "@/components/ui/section-heading";
 import { SearchBox } from "@/components/ui/search-box";
+import { SuggestionsFeed, SuggestionsSkeleton } from "@/components/suggestions/suggestions-feed";
 import { getStore, getViewer } from "@/lib/auth";
 import { GENRES, MOODS } from "@/lib/data/seed/books";
 import { MOOD_RULES } from "@/lib/moods";
@@ -122,6 +124,16 @@ export default async function DiscoverPage({ searchParams }: PageProps<"/discove
         <Sparkle className="absolute right-2 top-0 hidden text-burgundy md:block" />
       </header>
       {filterBar}
+
+      {viewer && (
+        <section className="mt-12 max-w-3xl" aria-labelledby="for-you">
+          <SectionHeading kicker="from your shelves" title="Suggested for you" href="/discover/for-you" action="All suggestions" />
+          <h2 id="for-you" className="sr-only">Suggested for you</h2>
+          <Suspense fallback={<SuggestionsSkeleton compact />}>
+            <SuggestionsFeed compact />
+          </Suspense>
+        </section>
+      )}
 
       {trending.length > 0 && (
         <section className="mt-12" aria-labelledby="trending">

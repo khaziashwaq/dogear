@@ -92,7 +92,17 @@ Counters (`likes_count`, `followers_count`, …) are denormalised and maintained
 | Pass the book | **Implemented** — book page "Pass it on", inbox under Notifications | `recommendations` table |
 | Book trails | **Data model + "pass it on" from a received pass** (sets `parent_id`) | A trail page is a recursive CTE over `recommendations.parent_id` |
 | Reading Wrapped | **Reading year** page per profile, plus a quote-card image pipeline | Reuse the `next/og` route pattern in `app/quotes/[id]/card` for a year card |
+| Suggested for you | **Implemented** — `/discover/for-you` and the top of Discover | See "Personalised suggestions" below |
 | Little book clubs | Not built | Add `clubs`, `club_members` and `club_posts`, or give `posts` a `club_id` with a membership-based policy. `can_view` is the place to extend visibility |
+
+## Personalised suggestions
+
+Deterministic and metadata-only: no paid APIs, no LLM.
+
+- **Engine** (`src/lib/suggestions/engine.ts`, pure): shelves → taste profile (authors, genres, Open Library subject headings, moods), each book weighted by shelf (Read 1, Reading 0.8, Want to Read 0.45, DNF 0), rating and favourite. Candidates score on topic overlap 30%, author 25%, closest single book's themes 20%, library breadth 15%, popularity 10% (`WEIGHTS`). Every explanation comes from the metadata that matched.
+- **Discovery** (`discover.ts`, `sources.ts`): at most 4 subject + 3 author Open Library lookups (each cached a day), books loved by readers with overlapping shelves (`co_shelved_books()`), and catalogue genre matches. A failed lookup returns null and is counted, so a failure never reads as "nothing found".
+- **Lifecycle** (`service.ts`, `trigger.ts`): a fingerprint of the shelves is stored with each list. Shelf actions schedule a rebuild with `after()`; opening the list rebuilds only if the fingerprint changed. A refresh claims itself first, then backs off for 45s after a failure, keeping the current list. Adding a book never waits on suggestions.
+- **Storage**: `book_suggestions` (private per reader; dismissed/added rows are never touched by a refresh, so they never come back) and `suggestion_runs`, written atomically by `save_suggestions()`. `books.subjects` holds cleaned headings, filled server-side on add and backfilled a few per refresh. Separate from `recommendations`, which are books one reader passes to another.
 
 ## Known limitations
 

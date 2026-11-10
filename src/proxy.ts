@@ -5,7 +5,7 @@ import { updateSupabaseSession } from "@/lib/supabase/proxy-session";
 
 // Session plumbing, the Content-Security-Policy, and an optimistic redirect for signed-out
 // visitors on private pages. Real authorisation still happens in RLS and in server components/actions.
-const PRIVATE = ["/home", "/activity", "/import", "/notifications", "/bookmarks", "/diary", "/settings", "/shelf", "/onboarding", "/review/new", "/quotes/new", "/lists/new"];
+const PRIVATE = ["/home", "/activity", "/import", "/notifications", "/bookmarks", "/diary", "/settings", "/shelf", "/onboarding", "/review/new", "/quotes/new", "/lists/new", "/discover/for-you"];
 
 function hasSession(request: NextRequest) {
   return request.cookies.getAll().some(({ name }) => name === "dogear_demo_session" || (name.startsWith("sb-") && name.includes("-auth-token")));
