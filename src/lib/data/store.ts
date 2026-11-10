@@ -6,7 +6,15 @@ import type {
   BookStats,
   Comment,
   Compatibility,
+  FeedFilter,
+  Invite,
+  InvitePreview,
+  ListSort,
+  ReadingRecap,
+  SimilarReader,
   ListInput,
+  LogBookInput,
+  LogBookResult,
   Notification,
   Page,
   Post,
@@ -83,6 +91,10 @@ export interface DataStore {
   setShelfStatus(bookId: string, status: ShelfStatus | null, opts?: ShelfMoveOptions): Promise<ShelfMove>;
   /** Put back what a recent move changed (within 15 minutes). */
   undoShelfMove(undo: ShelfUndo): Promise<UserBook | null>;
+  /** One imported book (e.g. from Goodreads): shelf, rating, date, custom shelves; a diary entry for a dated read. */
+  importShelfEntry(input: { bookId: string; status: ShelfStatus; rating: number | null; finishedOn: string | null; shelves: string[]; overwrite: boolean }): Promise<"imported" | "updated" | "skipped">;
+  /** Atomic "I finished this": diary entry, Read shelf, rating, and optional review / line / post. */
+  logBook(input: LogBookInput): Promise<LogBookResult>;
   setRating(bookId: string, rating: number | null): Promise<UserBook>;
   setFavourite(bookId: string, favourite: boolean): Promise<UserBook>;
   setCustomShelves(bookId: string, shelves: string[]): Promise<UserBook>;
@@ -121,6 +133,8 @@ export interface DataStore {
   listListsByUser(userId: string): Promise<ReadingList[]>;
   listListsForBook(bookId: string, limit?: number): Promise<ReadingList[]>;
   popularLists(limit?: number): Promise<ReadingList[]>;
+  /** Public pinboards by title or description, sorted. */
+  searchLists(q: string, sort: ListSort, limit?: number): Promise<ReadingList[]>;
   followedLists(): Promise<ReadingList[]>;
   createList(input: ListInput): Promise<ReadingList>;
   updateList(id: string, input: ListInput): Promise<ReadingList>;
@@ -133,7 +147,7 @@ export interface DataStore {
   unfollowList(listId: string): Promise<void>;
 
   // ── posts & feed ───────────────────────────────────────────────────
-  getFeed(tab: "following" | "discover", cursor: string | null, limit?: number): Promise<Page<Post>>;
+  getFeed(tab: "following" | "discover", cursor: string | null, limit?: number, filter?: FeedFilter): Promise<Page<Post>>;
   getUserPosts(userId: string, cursor: string | null, limit?: number): Promise<Page<Post>>;
   getBookPosts(bookId: string, limit?: number): Promise<Post[]>;
   getPost(id: string): Promise<Post | null>;
@@ -145,11 +159,13 @@ export interface DataStore {
   unbookmark(postId: string): Promise<void>;
   repost(postId: string): Promise<void>;
   unrepost(postId: string): Promise<void>;
-  listBookmarks(cursor: string | null, limit?: number): Promise<Page<Post>>;
+  /** Your saved posts; `kind` narrows them (e.g. "quote" for saved annotations). */
+  listBookmarks(cursor: string | null, limit?: number, kind?: Post["kind"]): Promise<Page<Post>>;
 
   // ── comments ───────────────────────────────────────────────────────
   listComments(postId: string): Promise<Comment[]>;
   addComment(postId: string, body: string, parentId: string | null): Promise<Comment>;
+  updateComment(id: string, body: string): Promise<Comment>;
   deleteComment(id: string): Promise<void>;
 
   // ── notifications & passes ─────────────────────────────────────────
@@ -158,6 +174,16 @@ export interface DataStore {
   markNotificationsRead(): Promise<void>;
   sendRecommendation(recipientId: string, bookId: string, message: string | null, parentId: string | null): Promise<Recommendation>;
   listRecommendationsReceived(limit?: number): Promise<Recommendation[]>;
+
+  // ── discovery & invites ────────────────────────────────────────────
+  similarReaders(limit?: number): Promise<SimilarReader[]>;
+  createInvite(opts: { expiresInDays: number | null; maxUses: number | null }): Promise<Invite>;
+  listInvites(): Promise<Invite[]>;
+  deleteInvite(code: string): Promise<void>;
+  invitePreview(code: string): Promise<InvitePreview | null>;
+  /** For a newly joined reader: count the invite once and follow whoever sent it. */
+  redeemInvite(code: string): Promise<boolean>;
+  readingRecap(userId: string, year: number, month: number | null): Promise<ReadingRecap>;
 
   // ── safety & your data ─────────────────────────────────────────────
   relationship(targetId: string): Promise<Relationship>;

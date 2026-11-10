@@ -69,8 +69,10 @@ export async function createPostAction(input: z.input<typeof composerSchema> & {
 
 const cursor = z.string().max(200).nullable();
 
-export async function loadFeedAction(tab: "following" | "discover", c: string | null) {
-  return run(async () => (await getStore()).getFeed(z.enum(["following", "discover"]).parse(tab), cursor.parse(c)));
+const feedFilter = z.enum(["all", "reviews", "annotations", "reading", "lists"]).default("all");
+
+export async function loadFeedAction(tab: "following" | "discover", c: string | null, filter?: string) {
+  return run(async () => (await getStore()).getFeed(z.enum(["following", "discover"]).parse(tab), cursor.parse(c), 12, feedFilter.parse(filter)));
 }
 
 export async function loadUserPostsAction(userId: string, c: string | null) {
@@ -88,6 +90,10 @@ export async function addCommentAction(postId: string, body: string, parentId: s
     revalidatePath(`/post/${postId}`);
     return comment;
   });
+}
+
+export async function updateCommentAction(commentId: string, body: string) {
+  return run(async () => (await getStore()).updateComment(id.parse(commentId), z.string().trim().min(1, "Comment can't be empty.").max(2000).parse(body)));
 }
 
 export async function deleteCommentAction(commentId: string, postId: string) {
@@ -144,4 +150,20 @@ const reportSchema = z.object({
 
 export async function reportAction(input: z.input<typeof reportSchema>) {
   return run(async () => (await getStore()).report(reportSchema.parse(input)));
+}
+
+// ── invites ────────────────────────────────────────────────────────────
+export async function createInviteAction(opts: { expiresInDays: number | null; maxUses: number | null }) {
+  return run(async () =>
+    (await getStore()).createInvite(
+      z.object({ expiresInDays: z.number().int().min(1).max(90).nullable(), maxUses: z.number().int().min(1).max(500).nullable() }).parse(opts),
+    ),
+  );
+}
+
+export async function deleteInviteAction(code: string) {
+  return run(async () => {
+    await (await getStore()).deleteInvite(z.string().regex(/^[A-Za-z0-9_-]{12,40}$/).parse(code));
+    revalidatePath("/settings");
+  });
 }

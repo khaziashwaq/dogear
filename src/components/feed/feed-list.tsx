@@ -5,6 +5,8 @@ import { Button } from "@/components/ui/button";
 import { FeedSkeleton } from "@/components/ui/skeleton";
 import type { Result } from "@/lib/action-result";
 import type { Page, Post } from "@/lib/types";
+import { groupFeed } from "@/lib/feed-group";
+import { GroupedActivity } from "./grouped-activity";
 import { PostCard } from "./post-card";
 
 /**
@@ -62,7 +64,9 @@ export function FeedList({
   return (
     <div>
       <div className="space-y-6">
-        {posts.map((p) => <PostCard key={p.id} post={p} />)}
+        {groupFeed(posts).map((item) =>
+          item.kind === "group" ? <GroupedActivity key={`g-${item.posts[0].id}`} posts={item.posts} /> : <PostCard key={item.post.id} post={item.post} />,
+        )}
       </div>
       <div ref={sentinel} className="mt-6">
         {pending && <FeedSkeleton count={2} />}

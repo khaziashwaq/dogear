@@ -11,11 +11,13 @@ import { chipClass } from "@/components/ui/chip";
 import { useToast } from "@/components/ui/toast";
 import type { Profile } from "@/lib/types";
 import { USERNAME_RE, cn } from "@/lib/utils";
+import { OnboardingBooks } from "./onboarding-books";
 
-const STEPS = ["you", "taste", "people"] as const;
+const STEPS = ["you", "taste", "read", "next", "people"] as const;
 
 export function Onboarding({ viewer, genres, authorIdeas }: { viewer: Profile; genres: string[]; authorIdeas: string[] }) {
-  const [step, setStep] = useState(0);
+  // Coming back halfway? Pick up after the parts already saved (name and taste are saved at step two).
+  const [step, setStep] = useState(viewer.username && viewer.favouriteGenres.length ? 2 : 0);
   const [displayName, setDisplayName] = useState(viewer.displayName);
   const [username, setUsername] = useState(viewer.username ?? "");
   const [bio, setBio] = useState(viewer.bio);
@@ -62,6 +64,21 @@ export function Onboarding({ viewer, genres, authorIdeas }: { viewer: Profile; g
       setFollow(new Set(res.data.slice(0, 3).map((p) => p.id)));
       setStep(2);
     });
+
+  // Readers to suggest when someone resumes past the taste step (suggestions come with saving taste).
+  useEffect(() => {
+    if (step !== 4 || suggested.length) return;
+    let live = true;
+    saveOnboardingProfileAction({ username, displayName, bio, genres: picked, authors, readingGoal: goal ? Math.max(1, Math.min(1000, Number(goal))) : null }).then((res) => {
+      if (!live || !res.ok) return;
+      setSuggested(res.data);
+      setFollow(new Set(res.data.slice(0, 3).map((p) => p.id)));
+    });
+    return () => {
+      live = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only when arriving at the people step
+  }, [step]);
 
   const finish = () =>
     start(async () => {
@@ -183,15 +200,41 @@ export function Onboarding({ viewer, genres, authorIdeas }: { viewer: Profile; g
                 </label>
                 <div className="flex justify-between gap-3">
                   <Button variant="ghost" onClick={() => setStep(0)}>← Back</Button>
-                  <Button size="lg" onClick={saveTaste} disabled={pending || picked.length === 0}>{pending ? "Saving…" : "Next: your people →"}</Button>
+                  <Button size="lg" onClick={saveTaste} disabled={pending || picked.length === 0}>{pending ? "Saving…" : "Next: your shelves →"}</Button>
                 </div>
               </div>
             )}
 
             {step === 2 && (
+              <OnboardingBooks
+                status="read"
+                step="step three"
+                title="Three books you've already read"
+                blurb="They go straight onto your Read shelf, and help us find readers like you. Tap again to take one back."
+                target={3}
+                starter={authors[0] ?? picked[0] ?? ""}
+                onBack={() => setStep(1)}
+                onNext={() => setStep(3)}
+              />
+            )}
+
+            {step === 3 && (
+              <OnboardingBooks
+                status="want_to_read"
+                step="step four"
+                title="What's next on your pile?"
+                blurb="A few books you'd like to read. They wait on your Want to read shelf."
+                target={3}
+                starter={picked[0] ?? authors[1] ?? ""}
+                onBack={() => setStep(2)}
+                onNext={() => setStep(4)}
+              />
+            )}
+
+            {step === 4 && (
               <div className="space-y-6">
                 <div>
-                  <p className="meta text-burgundy">step three</p>
+                  <p className="meta text-burgundy">step five</p>
                   <h1 className="mt-1 text-4xl">Readers you might get along with</h1>
                   <p className="mt-1 text-sm text-ink-soft">Your home feed is made of the people you follow. You can always change this later.</p>
                 </div>
@@ -225,7 +268,7 @@ export function Onboarding({ viewer, genres, authorIdeas }: { viewer: Profile; g
                   </ul>
                 )}
                 <div className="flex justify-between gap-3">
-                  <Button variant="ghost" onClick={() => setStep(1)}>← Back</Button>
+                  <Button variant="ghost" onClick={() => setStep(3)}>← Back</Button>
                   <Button size="lg" variant="burgundy" onClick={finish} disabled={pending}>{pending ? "Opening the doors…" : follow.size ? `Follow ${follow.size} & start reading` : "Start reading"}</Button>
                 </div>
               </div>

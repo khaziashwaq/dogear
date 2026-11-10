@@ -21,6 +21,7 @@ import { setShelfStatusAction, undoShelfMoveAction } from "@/app/actions/books";
 import { BookCover } from "@/components/book/book-cover";
 import { BookPicker } from "@/components/book/book-picker";
 import { BookshelfRow, SpineMark } from "@/components/book/bookshelf";
+import { LogBookDialog } from "@/components/book/log-book-dialog";
 import { Button } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
 import { useToast } from "@/components/ui/toast";
@@ -50,7 +51,7 @@ function isHome(s: ShelfStatus | null): s is HomeShelfKey {
   return s === "read" || s === "reading" || s === "want_to_read";
 }
 
-export function HomeShelves({ initial, allShelvesHref }: { initial: Shelves; allShelvesHref: string }) {
+export function HomeShelves({ initial, allShelvesHref, goal }: { initial: Shelves; allShelvesHref: string; /** The reading-goal line, shown in the top row. */ goal?: ReactNode }) {
   const [shelves, setShelves] = useState<Shelves>(initial);
   const [pending, setPending] = useState<Set<string>>(new Set());
   const [dragging, setDragging] = useState<UserBook | null>(null);
@@ -60,6 +61,8 @@ export function HomeShelves({ initial, allShelvesHref }: { initial: Shelves; all
   const [picking, setPicking] = useState(false);
   // Read → Reading could be a re-read or a slip of the hand; ask which before writing the diary.
   const [askReread, setAskReread] = useState<UserBook | null>(null);
+  // Finishing a book is a moment: moving one to Read opens the log (with a one-step escape hatch).
+  const [logging, setLogging] = useState<UserBook | null>(null);
   const [, start] = useTransition();
   const toast = useToast();
   const reduce = useReducedMotion();
@@ -102,6 +105,10 @@ export function HomeShelves({ initial, allShelvesHref }: { initial: Shelves; all
       if (from === to) return;
       if (from === "read" && to === "reading" && !opts) {
         setAskReread(ub);
+        return;
+      }
+      if (to === "read" && !opts) {
+        setLogging(ub);
         return;
       }
 
@@ -197,7 +204,8 @@ export function HomeShelves({ initial, allShelvesHref }: { initial: Shelves; all
           <span className="hidden sm:inline">Drag a book to another shelf to move it,</span>
           <span className="sm:hidden">Press and hold a book to move it,</span> or use <MoreHorizontal className="inline size-4 align-[-3px]" aria-label="the more menu" /> under it.
         </p>
-        <div className="flex items-baseline gap-4 text-sm">
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-sm">
+          {goal}
           <Link href={allShelvesHref} className="link-underline hidden text-ink-soft hover:text-ink sm:inline">All shelves</Link>
           <button type="button" onClick={() => setPicking(true)} className="inline-flex items-center gap-1.5 text-burgundy hover:underline">
             <Plus className="size-4" /> Add a book
@@ -243,6 +251,26 @@ export function HomeShelves({ initial, allShelvesHref }: { initial: Shelves; all
       </DragOverlay>
 
       <BookPicker open={picking} onClose={() => setPicking(false)} onPick={add} title="Add a book to Want to read" />
+      {logging && (
+        <LogBookDialog
+          open
+          onClose={() => setLogging(null)}
+          book={logging.book}
+          userBook={logging}
+          onJustShelve={() => move(logging.bookId, "read", {})}
+          onLogged={({ userBook }) => {
+            const bookId = logging.bookId;
+            setShelves((s) => {
+              const next: Shelves = { read: [], reading: [], want_to_read: [] };
+              for (const { key } of SHELVES) next[key] = s[key].filter((b) => b.bookId !== bookId);
+              next.read = [{ ...logging, ...(userBook ?? {}), status: "read", book: logging.book }, ...next.read];
+              return next;
+            });
+            setArrived(bookId);
+            setAnnouncement(`${logging.book.title} logged and moved to Read`);
+          }}
+        />
+      )}
       <Dialog
         open={askReread !== null}
         onClose={() => setAskReread(null)}

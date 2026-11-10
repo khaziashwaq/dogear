@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
-import { addCommentAction, deleteCommentAction } from "@/app/actions/social";
+import { addCommentAction, deleteCommentAction, updateCommentAction } from "@/app/actions/social";
 import { Avatar } from "@/components/profile/avatar";
 import { ReportDialog } from "@/components/safety/report-dialog";
 import { useViewer } from "@/components/providers/viewer";
@@ -37,11 +37,43 @@ function CommentForm({ postId, parentId, onDone, autoFocus, placeholder }: { pos
   );
 }
 
+/** Edit your own comment in place. */
+function EditForm({ c, onDone, onCancel }: { c: Comment; onDone: (c: Comment) => void; onCancel: () => void }) {
+  const [body, setBody] = useState(c.body);
+  const [pending, start] = useTransition();
+  const toast = useToast();
+  return (
+    <form
+      className="mt-1 space-y-2"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (!body.trim() || body.trim() === c.body) return onCancel();
+        start(async () => {
+          const res = await updateCommentAction(c.id, body);
+          if (!res.ok) return toast(res.error, "error");
+          onDone(res.data);
+        });
+      }}
+      onKeyDown={(e) => e.key === "Escape" && onCancel()}
+    >
+      <label className="sr-only" htmlFor={`edit-${c.id}`}>Edit your comment</label>
+      <textarea id={`edit-${c.id}`} className="field min-h-16 resize-y text-sm" value={body} onChange={(e) => setBody(e.target.value)} maxLength={2000} autoFocus />
+      <div className="flex gap-2">
+        <Button type="submit" size="sm" disabled={pending || !body.trim()}>{pending ? "Saving…" : "Save"}</Button>
+        <Button size="sm" variant="ghost" onClick={onCancel}>Cancel</Button>
+      </div>
+    </form>
+  );
+}
+
 export function CommentThread({ postId, postOwnerId, initial }: { postId: string; postOwnerId: string; initial: Comment[] }) {
   const { viewer } = useViewer();
   const [comments, setComments] = useState(initial);
   const [replyTo, setReplyTo] = useState<string | null>(null);
   const [reporting, setReporting] = useState<Comment | null>(null);
+  const [editing, setEditing] = useState<string | null>(null);
+  const replace = (n: Comment) =>
+    setComments((list) => list.map((x) => (x.id === n.id ? { ...x, body: n.body, editedAt: n.editedAt } : { ...x, replies: x.replies.map((r) => (r.id === n.id ? { ...r, body: n.body, editedAt: n.editedAt } : r)) })));
   const [, start] = useTransition();
   const toast = useToast();
   const router = useRouter();
@@ -62,11 +94,16 @@ export function CommentThread({ postId, postOwnerId, initial }: { postId: string
       <div className="min-w-0 flex-1">
         <p className="text-sm">
           <Link href={`/u/${c.author.username}`} className="font-medium hover:text-burgundy">{c.author.displayName}</Link>
-          <span className="meta ml-2 normal-case tracking-normal">{timeAgo(c.createdAt)}</span>
+          <span className="meta ml-2 normal-case tracking-normal">{timeAgo(c.createdAt)}{c.editedAt ? " · edited" : ""}</span>
         </p>
-        <p className="mt-0.5 whitespace-pre-line text-[0.95rem] leading-relaxed">{c.body}</p>
+        {editing === c.id ? (
+          <EditForm c={c} onCancel={() => setEditing(null)} onDone={(n) => (replace(n), setEditing(null))} />
+        ) : (
+          <p className="mt-0.5 whitespace-pre-line text-[0.95rem] leading-relaxed">{c.body}</p>
+        )}
         <div className="mt-1 flex gap-3">
           {viewer && !isReply && <button type="button" onClick={() => setReplyTo(replyTo === c.id ? null : c.id)} className="meta hover:text-ink">reply</button>}
+          {viewer?.id === c.userId && editing !== c.id && <button type="button" onClick={() => setEditing(c.id)} className="meta hover:text-ink">edit</button>}
           {viewer && (viewer.id === c.userId || viewer.id === postOwnerId) && <button type="button" onClick={() => remove(c)} className="meta hover:text-burgundy">delete</button>}
           {viewer && viewer.id !== c.userId && <button type="button" onClick={() => setReporting(c)} className="meta hover:text-burgundy">report</button>}
         </div>

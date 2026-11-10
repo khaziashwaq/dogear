@@ -12,9 +12,11 @@
     "db:test:rls": "psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -f supabase/tests/rls_smoke.sql",
     "demo:reset": "node -e \"require('fs').rmSync('.data',{recursive:true,force:true})\"",
     "db:types": "supabase gen types typescript --linked > src/lib/supabase/database.types.ts",
-    "test": "npm run test:db && npm run test:store",
+    "test": "npm run test:unit && npm run test:db && npm run test:store",
     "test:db": "node --test --experimental-strip-types --no-warnings tests/db/*.test.ts",
-    "test:store": "tsx --conditions=react-server --test tests/store/*.test.ts"
+    "test:store": "tsx --conditions=react-server --test tests/store/*.test.ts",
+    "catalogue:starter": "tsx --conditions=react-server --env-file-if-exists=.env.local scripts/starter-catalogue.ts",
+    "test:unit": "node --test --experimental-strip-types --no-warnings tests/unit/*.test.ts"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

@@ -15,6 +15,7 @@ import { useToast } from "@/components/ui/toast";
 import { bookRef } from "@/lib/book-ref";
 import type { Book, Profile, ReadingList, ShelfStatus, UserBook } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { LogBookDialog } from "./log-book-dialog";
 
 const STATUSES: { value: ShelfStatus; label: string; icon: typeof BookOpen; done: string }[] = [
   { value: "want_to_read", label: "Want to read", icon: BookMarked, done: "Added to Want to Read" },
@@ -25,6 +26,8 @@ const STATUSES: { value: ShelfStatus; label: string; icon: typeof BookOpen; done
 
 export function ShelfActions({ book, userBook, signedIn, following }: { book: Book; userBook: UserBook | null; signedIn: boolean; following: Profile[] }) {
   const [ub, setUb] = useState(userBook);
+  // The log ("I finished this"): opened by Read, or by "Log another read" on a book already read.
+  const [logging, setLogging] = useState<{ reread: boolean } | null>(null);
   const [pending, start] = useTransition();
   const [dialog, setDialog] = useState<null | "list" | "pass" | "log" | "shelves">(null);
   const [progress, setProgress] = useState(userBook?.progressPages ? String(userBook.progressPages) : "");
@@ -58,6 +61,7 @@ export function ShelfActions({ book, userBook, signedIn, following }: { book: Bo
 
   const setStatus = (s: ShelfStatus) => {
     const next = ub?.status === s ? null : s;
+    if (next === "read") return setLogging({ reread: false });
     run(() => setShelfStatusAction(ref, next), next ? STATUSES.find((x) => x.value === next)!.done : "Removed from your shelves");
   };
 
@@ -86,9 +90,28 @@ export function ShelfActions({ book, userBook, signedIn, following }: { book: Bo
       </div>
 
       {ub?.status === "read" && (
-        <Button variant="paper" className="w-full" disabled={pending} onClick={() => run(() => setShelfStatusAction(ref, "reading", { reread: true }), "Re-reading — welcome back")}>
-          <RotateCcw className="size-4" /> Re-read
-        </Button>
+        <div className="grid grid-cols-2 gap-2">
+          <Button variant="paper" disabled={pending} onClick={() => run(() => setShelfStatusAction(ref, "reading", { reread: true }), "Re-reading — welcome back")}>
+            <RotateCcw className="size-4" /> Re-read
+          </Button>
+          <Button variant="paper" disabled={pending} onClick={() => setLogging({ reread: true })}>
+            <BookCheck className="size-4" /> Log another read
+          </Button>
+        </div>
+      )}
+      {logging && (
+        <LogBookDialog
+          open
+          onClose={() => setLogging(null)}
+          book={book}
+          userBook={ub}
+          defaultReread={logging.reread}
+          onJustShelve={logging.reread ? undefined : () => run(() => setShelfStatusAction(ref, "read", {}), "Marked as read")}
+          onLogged={({ userBook: saved }) => {
+            setUb(saved);
+            router.refresh();
+          }}
+        />
       )}
 
       {ub?.status === "reading" && (

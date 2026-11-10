@@ -11,17 +11,28 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { SectionHeading } from "@/components/ui/section-heading";
 import { requireViewer, getStore } from "@/lib/auth";
 import { bookHref } from "@/lib/book-ref";
+import type { FeedFilter } from "@/lib/types";
 import { authorLine, cn } from "@/lib/utils";
+import { chipClass } from "@/components/ui/chip";
 
 export const metadata: Metadata = { title: "Activity" };
+
+const FILTERS: { key: FeedFilter; label: string }[] = [
+  { key: "all", label: "Everything" },
+  { key: "reviews", label: "Reviews" },
+  { key: "annotations", label: "Annotations" },
+  { key: "reading", label: "Reading" },
+  { key: "lists", label: "Lists" },
+];
 
 export default async function ActivityPage({ searchParams }: PageProps<"/activity">) {
   const viewer = await requireViewer("/activity");
   const sp = await searchParams;
   const tab = sp.tab === "discover" ? "discover" : "following";
+  const filter = FILTERS.find((f) => f.key === sp.filter)?.key ?? "all";
   const store = await getStore();
   const [feed, reading, suggested, trending] = await Promise.all([
-    store.getFeed(tab, null),
+    store.getFeed(tab, null, 12, filter),
     store.getShelf(viewer.id, { status: "reading" }),
     store.suggestedReaders(4),
     store.trendingBooks(5),
@@ -29,7 +40,7 @@ export default async function ActivityPage({ searchParams }: PageProps<"/activit
 
   const load = async (cursor: string) => {
     "use server";
-    return loadFeedAction(tab, cursor);
+    return loadFeedAction(tab, cursor, filter);
   };
 
   const hour = new Date().getHours();
@@ -62,14 +73,27 @@ export default async function ActivityPage({ searchParams }: PageProps<"/activit
           ))}
         </nav>
 
+        <div className="scrollbar-none -mx-4 mt-4 flex gap-2 overflow-x-auto px-4 md:mx-0 md:px-0" role="group" aria-label="Show">
+          {FILTERS.map((f) => (
+            <Link
+              key={f.key}
+              href={`/activity?${new URLSearchParams({ ...(tab === "discover" ? { tab } : {}), ...(f.key === "all" ? {} : { filter: f.key }) })}`}
+              aria-current={filter === f.key ? "true" : undefined}
+              className={chipClass("paper", filter === f.key, "shrink-0")}
+            >
+              {f.label}
+            </Link>
+          ))}
+        </div>
+
         <div className="mt-6">
           <FeedList
-            key={tab}
+            key={`${tab}-${filter}`}
             initial={feed}
             load={load}
             empty={
               <EmptyState
-                title={tab === "following" ? "Your feed is a blank page" : "Nothing new out there yet"}
+                title={filter !== "all" ? `No ${FILTERS.find((f) => f.key === filter)!.label.toLowerCase()} yet` : tab === "following" ? "Your feed is a blank page" : "Nothing new out there yet"}
                 body={tab === "following" ? "Follow a few readers and their reviews, quotes and lists will show up here." : "Be the first: post an update or share a quote."}
                 note="every great shelf starts with one book"
                 action={<><ButtonLink href="/discover">Find readers</ButtonLink><ButtonLink href="/activity?tab=discover" variant="paper">See Discover</ButtonLink></>}

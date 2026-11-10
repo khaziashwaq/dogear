@@ -7,7 +7,15 @@ import type {
   BookStats,
   Comment,
   Compatibility,
+  FeedFilter,
+  Invite,
+  InvitePreview,
+  ListSort,
+  ReadingRecap,
+  SimilarReader,
   ListInput,
+  LogBookInput,
+  LogBookResult,
   Notification,
   Page,
   Post,
@@ -36,8 +44,8 @@ import type {
   UserBook,
 } from "@/lib/types";
 import { normaliseRating, slugify } from "@/lib/utils";
-import { AuthError, NotFoundError, RateLimitError, ValidationError, computeHistogram, emptyStats, type DataStore } from "../store";
-import { buildStats, cleanShelves, sortShelf } from "../shared";
+import { AuthError, NotFoundError, RateLimitError, ValidationError, emptyStats, type DataStore } from "../store";
+import { cleanShelves, sortShelf } from "../shared";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type Row = Record<string, any>;
@@ -359,12 +367,12 @@ export class SupabaseStore implements DataStore {
   async getBookStats(bookId: string): Promise<BookStats> {
     const [{ data: s }, { data: ratings }] = await Promise.all([
       this.sb.from("book_stats").select("*").eq("book_id", bookId).maybeSingle(),
-      this.sb.from("user_books").select("rating").eq("book_id", bookId).not("rating", "is", null).limit(10000),
+      this.sb.rpc("rating_histogram", { p_book_id: bookId }),
     ]);
     if (!s) return emptyStats();
     return {
       avgRating: num(s.avg_rating), ratingsCount: s.ratings_count, readersCount: s.readers_count, readingCount: s.reading_count,
-      wantCount: s.want_count, histogram: computeHistogram((ratings ?? []).map((r: Row) => num(r.rating))),
+      wantCount: s.want_count, histogram: (ratings as number[] | null) ?? new Array(10).fill(0),
     };
   }
   async getBookReaders(bookId: string, limit = 24): Promise<BookReader[]> {
@@ -395,6 +403,26 @@ export class SupabaseStore implements DataStore {
     });
     fail(error, "Couldn't update your shelf");
     return { userBook: await this.getUserBook(bookId), changed: Boolean(data?.changed), undo: (data?.undo as ShelfUndo) ?? null };
+  }
+  async importShelfEntry(input: { bookId: string; status: ShelfStatus; rating: number | null; finishedOn: string | null; shelves: string[]; overwrite: boolean }) {
+    this.me();
+    const { data, error } = await this.sb.rpc("import_shelf_entry", {
+      p_book_id: input.bookId, p_status: input.status, p_rating: normaliseRating(input.rating), p_finished_on: input.finishedOn,
+      p_shelves: cleanShelves(input.shelves), p_overwrite: input.overwrite,
+    });
+    fail(error, "Couldn't import that book");
+    return data as "imported" | "updated" | "skipped";
+  }
+  async logBook(input: LogBookInput): Promise<LogBookResult> {
+    this.me();
+    const { data, error } = await this.sb.rpc("log_book", {
+      p_book_id: input.bookId, p_finished_on: input.finishedOn, p_rating: normaliseRating(input.rating), p_reread: input.reread,
+      p_notes: input.notes, p_review_title: input.review?.title ?? null, p_review_body: input.review?.body ?? null,
+      p_spoilers: input.review?.containsSpoilers ?? false, p_quote_body: input.quote?.body ?? null, p_quote_page: input.quote?.page ?? null,
+      p_visibility: input.visibility, p_share: input.share,
+    });
+    fail(error, "Couldn't log that book");
+    return { sessionId: data.session_id, reviewId: data.review_id ?? null, quoteId: data.quote_id ?? null, postId: data.post_id ?? null };
   }
   async undoShelfMove(undo: ShelfUndo) {
     this.me();
@@ -495,26 +523,21 @@ export class SupabaseStore implements DataStore {
     };
   }
   async createReview(input: ReviewInput) {
-    const me = this.me();
-    const { data, error } = await this.sb.from("reviews").insert({ user_id: me, book_id: input.bookId, ...this.reviewRow(input) }).select(REVIEW_SELECT).single();
+    this.me();
+    // Review + post (+ Read shelf) in one transaction; the rating lands on the shelf via the database.
+    const { data: id, error } = await this.sb.rpc("publish_review", {
+      p_book_id: input.bookId, p_body: input.body, p_rating: normaliseRating(input.rating), p_title: input.title,
+      p_spoilers: input.containsSpoilers, p_reread: input.isReread, p_visibility: input.visibility,
+    });
     fail(error, "Couldn't publish your review");
-    const { data: post, error: postError } = await this.sb.from("posts").insert({ user_id: me, kind: "review", book_id: input.bookId, review_id: data.id, visibility: input.visibility }).select("id").single();
-    if (postError) {
-      // Don't leave a review that can't be liked or commented on.
-      await this.sb.from("reviews").delete().eq("id", data.id);
-      fail(postError, "Couldn't publish your review");
-    }
-    if (input.rating != null) {
-      const prev = await this.getUserBook(input.bookId);
-      await this.patchUserBook(input.bookId, { rating: normaliseRating(input.rating), status: prev?.status ?? "read" });
-    }
-    return this.review(data, post ?? null);
+    const review = await this.getReview(id as string);
+    if (!review) throw new Error("Couldn't load your review after publishing it");
+    return review;
   }
   async updateReview(id: string, input: ReviewInput) {
     const { data, error } = await this.sb.from("reviews").update(this.reviewRow(input)).eq("id", id).eq("user_id", this.me()).select(REVIEW_SELECT).single();
     if (!data && !error) throw new NotFoundError("Review not found");
     fail(error, "Couldn't save your review");
-    if (input.rating != null) await this.patchUserBook(data.book_id, { rating: normaliseRating(input.rating) });
     return (await this.hydrateReviews([data]))[0];
   }
   async deleteReview(id: string) {
@@ -627,6 +650,17 @@ export class SupabaseStore implements DataStore {
     const order = new Map(ids.map((id: string, i: number) => [id, i]));
     return this.hydrateLists((data ?? []).sort((a: Row, b: Row) => (order.get(a.id) as number) - (order.get(b.id) as number)));
   }
+  async searchLists(q: string, sort: ListSort, limit = 24) {
+    let query = this.sb.from("lists").select(LIST_SELECT).eq("visibility", "public");
+    const s = safeLike(q);
+    if (s) query = query.or(`title.ilike.%${s}%,description.ilike.%${s}%`);
+    query = sort === "recent" ? query.order("updated_at", { ascending: false }) : query.order("followers_count", { ascending: false }).order("updated_at", { ascending: false });
+    const { data, error } = await query.limit(sort === "books" ? 100 : limit * 2);
+    fail(error, "Couldn't search lists");
+    const lists = (await this.hydrateLists(data ?? [])).filter((l) => l.bookCount > 0);
+    if (sort === "books") lists.sort((a, b) => b.bookCount - a.bookCount);
+    return lists.slice(0, limit);
+  }
   async followedLists() {
     if (!this.viewerId) return [];
     const { data } = await this.sb.from("list_follows").select(`list:lists(${LIST_SELECT})`).eq("user_id", this.viewerId).order("created_at", { ascending: false }).limit(100);
@@ -677,7 +711,8 @@ export class SupabaseStore implements DataStore {
   }
   async reorderList(listId: string, bookIds: string[]) {
     this.me();
-    await Promise.all(bookIds.map((bookId, i) => this.sb.from("list_books").update({ position: i }).eq("list_id", listId).eq("book_id", bookId)));
+    const { error } = await this.sb.rpc("reorder_list", { p_list_id: listId, p_book_ids: bookIds });
+    fail(error, "Couldn't reorder that list");
   }
   async followList(listId: string) {
     const { error } = await this.sb.from("list_follows").upsert({ user_id: this.me(), list_id: listId }, { onConflict: "user_id,list_id", ignoreDuplicates: true });
@@ -689,9 +724,10 @@ export class SupabaseStore implements DataStore {
   }
 
   // ── posts & feed ────────────────────────────────────────────────────
-  async getFeed(tab: "following" | "discover", cursor: string | null, limit = 12) {
+  async getFeed(tab: "following" | "discover", cursor: string | null, limit = 12, filter: FeedFilter = "all") {
     if (tab === "following") this.me();
-    const q = this.sb.rpc(tab === "following" ? "following_posts" : "discover_posts").select(POST_SELECT);
+    let q = this.sb.rpc(tab === "following" ? "following_posts" : "discover_posts").select(POST_SELECT);
+    if (filter !== "all") q = q.in("kind", FEED_KINDS[filter]);
     return this.pagePosts(q, cursor, limit);
   }
   async getUserPosts(userId: string, cursor: string | null, limit = 12) {
@@ -761,9 +797,10 @@ export class SupabaseStore implements DataStore {
     const { error } = await this.sb.from("posts").delete().eq("user_id", this.me()).eq("repost_of_id", postId);
     fail(error);
   }
-  async listBookmarks(cursor: string | null, limit = 12): Promise<Page<Post>> {
+  async listBookmarks(cursor: string | null, limit = 12, kind?: Post["kind"]): Promise<Page<Post>> {
     const me = this.me();
-    let q = this.sb.from("bookmarks").select(`created_at, post_id, post:posts(${POST_SELECT})`).eq("user_id", me);
+    let q = this.sb.from("bookmarks").select(`created_at, post_id, post:posts${kind ? "!inner" : ""}(${POST_SELECT})`).eq("user_id", me);
+    if (kind) q = q.eq("post.kind", kind);
     if (cursor) {
       const [createdAt, id] = cursor.split("|");
       q = q.or(`created_at.lt.${createdAt},and(created_at.eq.${createdAt},post_id.lt.${id})`);
@@ -780,7 +817,8 @@ export class SupabaseStore implements DataStore {
   async listComments(postId: string): Promise<Comment[]> {
     const { data } = await this.sb.from("comments").select(`*, ${author("comments")}`).eq("post_id", postId).order("created_at").limit(500);
     const rows = (data ?? []).map((r: Row): Comment => ({
-      id: r.id, postId: r.post_id, userId: r.user_id, parentId: r.parent_id, body: r.body, createdAt: r.created_at, author: mapProfile(r.author), replies: [],
+      id: r.id, postId: r.post_id, userId: r.user_id, parentId: r.parent_id, body: r.body, createdAt: r.created_at,
+      editedAt: editedAt(r), author: mapProfile(r.author), replies: [],
     }));
     const top = rows.filter((c: Comment) => !c.parentId);
     const byId = new Map<string, Comment>(top.map((c: Comment) => [c.id, c]));
@@ -798,7 +836,15 @@ export class SupabaseStore implements DataStore {
     }
     const { data, error } = await this.sb.from("comments").insert({ post_id: postId, user_id: me, parent_id: parent, body: text }).select(`*, ${author("comments")}`).single();
     fail(error, "Couldn't post your comment");
-    return { id: data.id, postId, userId: me, parentId: data.parent_id, body: data.body, createdAt: data.created_at, author: mapProfile(data.author), replies: [] };
+    return { id: data.id, postId, userId: me, parentId: data.parent_id, body: data.body, createdAt: data.created_at, editedAt: null, author: mapProfile(data.author), replies: [] };
+  }
+  async updateComment(id: string, body: string) {
+    const text = body.trim();
+    if (!text) throw new ValidationError("Comment can't be empty.");
+    const { data, error } = await this.sb.from("comments").update({ body: text }).eq("id", id).eq("user_id", this.me()).select(`*, ${author("comments")}`).maybeSingle();
+    fail(error, "Couldn't save your comment");
+    if (!data) throw new NotFoundError("Comment not found");
+    return { id: data.id, postId: data.post_id, userId: data.user_id, parentId: data.parent_id, body: data.body, createdAt: data.created_at, editedAt: editedAt(data), author: mapProfile(data.author), replies: [] };
   }
   async deleteComment(id: string) {
     this.me();
@@ -848,6 +894,53 @@ export class SupabaseStore implements DataStore {
       .select("*, sender:profiles!recommendations_sender_id_fkey(*), recipient:profiles!recommendations_recipient_id_fkey(*), book:books(*)")
       .eq("recipient_id", this.me()).order("created_at", { ascending: false }).limit(limit);
     return (data ?? []).map(mapRecommendation);
+  }
+
+  // ── discovery & invites ─────────────────────────────────────────────
+  async similarReaders(limit = 8): Promise<SimilarReader[]> {
+    if (!this.viewerId) return [];
+    const { data, error } = await this.sb.rpc("similar_readers", { p_limit: limit });
+    fail(error, "Couldn't find similar readers");
+    return ((data ?? []) as Row[]).map((r) => ({
+      profile: mapProfile(r.profile), score: r.score, sharedBooks: r.shared_books, sharedFavourites: r.shared_favourites,
+      sharedAuthors: r.shared_authors ?? [], sharedGenres: r.shared_genres ?? [], agreement: r.agreement == null ? null : Number(r.agreement),
+    }));
+  }
+  async createInvite(opts: { expiresInDays: number | null; maxUses: number | null }): Promise<Invite> {
+    const me = this.me();
+    const { randomBytes } = await import("node:crypto");
+    const code = randomBytes(12).toString("base64url");
+    const expires = opts.expiresInDays ? new Date(Date.now() + opts.expiresInDays * 86_400_000).toISOString() : null;
+    const { data, error } = await this.sb.from("invites").insert({ code, inviter_id: me, expires_at: expires, max_uses: opts.maxUses }).select("*").single();
+    fail(error, "Couldn't create an invite link");
+    return mapInvite(data);
+  }
+  async listInvites() {
+    const { data, error } = await this.sb.from("invites").select("*").eq("inviter_id", this.me()).order("created_at", { ascending: false });
+    fail(error);
+    return ((data ?? []) as Row[]).map(mapInvite);
+  }
+  async deleteInvite(code: string) {
+    const { error } = await this.sb.from("invites").delete().eq("code", code).eq("inviter_id", this.me());
+    fail(error);
+  }
+  async invitePreview(code: string): Promise<InvitePreview | null> {
+    const { data, error } = await this.sb.rpc("invite_preview", { p_code: code });
+    fail(error);
+    if (!data) return null;
+    const i = data.inviter as Row;
+    return { valid: Boolean(data.valid), inviter: { username: i.username, displayName: i.display_name ?? "", avatarUrl: i.avatar_url, favouriteGenres: i.favourite_genres ?? [] } };
+  }
+  async redeemInvite(code: string) {
+    this.me();
+    const { data, error } = await this.sb.rpc("redeem_invite", { p_code: code });
+    fail(error);
+    return Boolean(data);
+  }
+  async readingRecap(userId: string, year: number, month: number | null): Promise<ReadingRecap> {
+    const { data, error } = await this.sb.rpc("reading_recap", { p_user: userId, p_year: year, p_month: month });
+    fail(error, "Couldn't load that recap");
+    return mapRecap(data as Row);
   }
 
   // ── safety & your data ──────────────────────────────────────────────
@@ -947,14 +1040,17 @@ export class SupabaseStore implements DataStore {
 
   // ── stats ───────────────────────────────────────────────────────────
   async getProfileStats(userId: string, year: number): Promise<ProfileStats> {
-    const head = { count: "exact" as const, head: true };
-    const [{ data: shelf }, reviews, quotes, lists] = await Promise.all([
-      this.sb.from("user_books").select("*, book:books(*)").eq("user_id", userId).limit(10000),
-      this.sb.from("reviews").select("id", head).eq("user_id", userId),
-      this.sb.from("quotes").select("id", head).eq("user_id", userId),
-      this.sb.from("lists").select("id", head).eq("user_id", userId),
-    ]);
-    return buildStats(year, (shelf ?? []).map(mapUserBook), reviews.count ?? 0, quotes.count ?? 0, lists.count ?? 0);
+    // Aggregated in the database (and limited by RLS: your diary for you, public shelves for others).
+    const { data, error } = await this.sb.rpc("reading_stats", { p_user: userId, p_year: year });
+    fail(error, "Couldn't load reading stats");
+    const d = data as Row;
+    return {
+      year, booksRead: d.books_read_all_time, booksReadThisYear: d.completions, distinctBooksThisYear: d.distinct_books,
+      rereadsThisYear: d.rereads, sessionsThisYear: d.sessions, pagesReadThisYear: Number(d.pages), booksWithPagesThisYear: d.books_with_pages,
+      currentlyReading: d.currently_reading, averageRating: d.average_rating == null ? null : Number(d.average_rating),
+      reviewsCount: d.reviews, quotesCount: d.quotes, listsCount: d.lists, ratingDistribution: d.rating_distribution, byMonth: d.by_month,
+      topGenres: d.top_genres, topAuthors: d.top_authors,
+    };
   }
   async compatibility(otherId: string): Promise<Compatibility | null> {
     if (!this.viewerId || otherId === this.viewerId) return null;
@@ -969,6 +1065,43 @@ function mapRecommendation(r: Row): Recommendation {
     id: r.id, sender: mapProfile(r.sender), recipient: mapProfile(r.recipient), book: mapBook(r.book), message: r.message,
     parentId: r.parent_id, seenAt: r.seen_at, createdAt: r.created_at,
   };
+}
+
+/** Post kinds behind each feed filter. */
+export const FEED_KINDS: Record<Exclude<FeedFilter, "all">, Post["kind"][]> = {
+  reviews: ["review"],
+  annotations: ["quote"],
+  reading: ["started", "finished", "update"],
+  lists: ["list"],
+};
+
+function mapInvite(r: Row): Invite {
+  const closed = (r.expires_at != null && Date.parse(r.expires_at) <= Date.now()) || (r.max_uses != null && r.uses >= r.max_uses);
+  return { code: r.code, createdAt: r.created_at, expiresAt: r.expires_at, maxUses: r.max_uses, uses: r.uses, closed };
+}
+
+const recapBook = (b: Row | null) =>
+  b ? { id: b.id ?? b.book_id, slug: b.slug, title: b.title, authors: b.authors ?? [], coverUrl: b.cover_url ?? null } : null;
+
+export function mapRecap(d: Row): ReadingRecap {
+  return {
+    year: d.year, month: d.month ?? null, completions: d.completions, distinctBooks: d.distinct_books, rereads: d.rereads,
+    pages: Number(d.pages), booksWithPages: d.books_with_pages, averageRating: d.average_rating == null ? null : Number(d.average_rating),
+    byMonth: d.by_month ?? new Array(12).fill(0),
+    favouriteBook: d.favourite_book ? { ...recapBook(d.favourite_book)!, rating: Number(d.favourite_book.rating) } : null,
+    topAuthor: d.top_author ? { name: d.top_author.name, count: Number(d.top_author.count) } : null,
+    topGenre: d.top_genre ? { name: d.top_genre.name, count: Number(d.top_genre.count) } : null,
+    busiestMonth: d.busiest_month ? { month: Number(d.busiest_month.month), count: Number(d.busiest_month.count) } : null,
+    mostHighlighted: d.most_highlighted ? { ...recapBook(d.most_highlighted)!, count: Number(d.most_highlighted.count) } : null,
+    lovedLine: d.loved_line ? { quoteId: d.loved_line.quote_id, body: d.loved_line.body, title: d.loved_line.title, likes: Number(d.loved_line.likes) } : null,
+    annotations: Number(d.annotations ?? 0),
+    timeline: ((d.timeline ?? []) as Row[]).map((t) => ({ ...recapBook(t)!, day: t.day, rating: t.rating == null ? null : Number(t.rating), reread: Boolean(t.reread) })),
+  };
+}
+
+/** A comment counts as edited when it changed more than a moment after it was posted. */
+function editedAt(r: Row): string | null {
+  return r.updated_at && Date.parse(r.updated_at) - Date.parse(r.created_at) > 1000 ? r.updated_at : null;
 }
 
 function postExcerpt(p: Row): string {

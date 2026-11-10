@@ -1,6 +1,9 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { resetDemoAction, signOutAction } from "@/app/actions/auth";
 import { DeleteAccount, SafetyList } from "@/components/profile/account-controls";
+import { InviteManager } from "@/components/profile/invite-manager";
+import { env } from "@/lib/env";
 import { SettingsForm } from "@/components/profile/settings-form";
 import { Button, buttonClass } from "@/components/ui/button";
 import { getStore, requireViewer } from "@/lib/auth";
@@ -12,7 +15,7 @@ export const metadata: Metadata = { title: "Settings" };
 export default async function SettingsPage() {
   const viewer = await requireViewer("/settings");
   const store = await getStore();
-  const [blocked, muted] = await Promise.all([store.listBlocked(), store.listMuted()]);
+  const [blocked, muted, invites] = await Promise.all([store.listBlocked(), store.listMuted(), store.listInvites()]);
   return (
     <div className="mx-auto max-w-2xl">
       <h1 className="text-5xl leading-none">Settings<span className="text-burgundy">.</span></h1>
@@ -28,6 +31,20 @@ export default async function SettingsPage() {
           )}
           <form action={signOutAction}><Button type="submit" variant="outline">Sign out</Button></form>
         </div>
+      </section>
+
+      <section className="mt-6 border border-line-strong p-5" aria-labelledby="invite-h">
+        <h2 id="invite-h" className="text-xl">Invite friends</h2>
+        <p className="mb-4 text-sm text-ink-soft">Anyone who joins with your link starts out following you. You&rsquo;ll see how many joined, not who.</p>
+        <InviteManager initial={invites} origin={env.siteUrl} />
+      </section>
+
+      <section className="mt-6 flex flex-wrap items-center justify-between gap-4 border border-line-strong p-5" aria-labelledby="import-h">
+        <div className="max-w-md">
+          <h2 id="import-h" className="text-xl">Bring your Goodreads shelves</h2>
+          <p className="text-sm text-ink-soft">Import your Goodreads export: shelves, ratings and dates read. You&rsquo;ll see everything before it&rsquo;s saved.</p>
+        </div>
+        <Link href="/import" className={buttonClass("paper", "md")}>Import from Goodreads</Link>
       </section>
 
       <section className="mt-6 border border-line-strong p-5" aria-labelledby="safety-h">

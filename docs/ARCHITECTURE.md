@@ -58,7 +58,17 @@ Counters (`likes_count`, `followers_count`, …) are denormalised and maintained
 - Production fails closed: `src/instrumentation.ts` refuses to start without Supabase and the service-role key, and sample-data mode only exists in development.
 - `src/proxy.ts` sets a per-request nonce CSP (`strict-dynamic`). `next.config.ts` sets nosniff, `X-Frame-Options`, Referrer-Policy, Permissions-Policy and HSTS (production).
 - Server actions validate every input with zod. Redirect targets (`next=`) are restricted to same-origin paths. Uploads are type- and size-checked (2 MB).
-- Tests: `npm test` runs `tests/db` (every migration applied to PGlite, a real Postgres, then RLS, grants and triggers exercised as `anon` and `authenticated`) and `tests/store` (the local store held to the same rules). `supabase/tests/rls_smoke.sql` is the older psql smoke test.
+- Ratings: the shelf entry (`user_books.rating`) is the reader's one rating for a book; triggers keep the copy on their reviews in step (stars on a review set it; a new shelf rating updates their reviews).
+- Logging a finished book is one function, `log_book` (diary entry with date, re-read and private notes; Read shelf; rating; optional review, favourite line and "finished" post), surfaced by `LogBookDialog` whenever a book is moved to Read. Reviews publish through `publish_review` (review + post atomically); lists reorder through `reorder_list`.
+- Stats are aggregated by `reading_stats(user, year)`, scoped to the year. Under RLS a reader's own stats use their private diary (re-reads count); others see one completion per book from public shelves. Pages only add up for books with a known page count.
+- Moods come from Open Library subject headings via `src/lib/moods.ts`, which also feeds mood pages from Open Library so they're never empty. `npm run catalogue:starter` imports a curated starter catalogue of real books (dry run unless `--apply --project <ref>`; `--enrich-moods` fills moods for existing books).
+- Feed: the Following / Discover feeds filter by kind (`FeedFilter`); runs of plain "started" / "finished" posts by one reader collapse into one card (`src/lib/feed-group.ts`).
+- Readers with similar taste: `similar_readers()` scores public overlap only (shared shelves, rating agreement, favourite authors, genres, favourites), never private diaries, never blocked or already-followed readers.
+- Invites: `invites` (owner-visible) and `invite_redemptions` (no API access). `invite_preview(code)` is the only public view of an invite; `redeem_invite(code)` runs once per new reader (account under a week old) and follows the inviter. The code rides through Google sign-in in an httpOnly cookie and is claimed when onboarding finishes.
+- Recaps: `reading_recap(user, year, month?)` powers the Yearbook and monthly recaps (`/u/<name>/recap`) and their share images. A Read book with no finish date counts all-time but never in a period. Share images for lists, recaps, reviews and annotations share `src/lib/og.tsx`.
+- Goodreads import (`/import`): the CSV is parsed in the browser (`src/lib/goodreads.ts`); each book goes to `importGoodreadsRowAction`, which matches by ISBN (catalogue, then Open Library) or confidently by title + author, and writes through `import_shelf_entry` (no posts; existing books untouched unless overwriting).
+- Function grants: functions that act for a reader are executable by `authenticated` only (PUBLIC execute revoked).
+- Tests: `npm test` runs `tests/unit`, then `tests/db` (every migration applied to PGlite, a real Postgres, then RLS, grants and triggers exercised as `anon` and `authenticated`) and `tests/store` (the local store held to the same rules). `supabase/tests/rls_smoke.sql` is the older psql smoke test.
 
 ## Front end
 

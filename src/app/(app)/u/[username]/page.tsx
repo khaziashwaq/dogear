@@ -3,6 +3,8 @@ import { notFound } from "next/navigation";
 import { loadUserPostsAction } from "@/app/actions/social";
 import { BookshelfRow } from "@/components/book/bookshelf";
 import { FeedList } from "@/components/feed/feed-list";
+import { ListCard } from "@/components/list/list-card";
+import { AnnotationCard } from "@/components/quote/quote-card";
 import { Chip } from "@/components/ui/chip";
 import { EmptyState } from "@/components/ui/empty-state";
 import { SectionHeading } from "@/components/ui/section-heading";
@@ -15,11 +17,18 @@ export default async function ProfileOverview({ params }: PageProps<"/u/[usernam
   if (!profile) notFound();
   const [store, viewer] = await Promise.all([getStore(), getViewer()]);
   const own = viewer?.id === profile.id;
-  const [favourites, reading, posts] = await Promise.all([
+  const year = new Date().getFullYear();
+  const [favourites, reading, posts, quotes, lists, stats] = await Promise.all([
     store.getFavouriteBooks(profile.id, 4),
     store.getShelf(profile.id, { status: "reading" }),
     store.getUserPosts(profile.id, null),
+    store.listQuotesByUser(profile.id, 12),
+    store.listListsByUser(profile.id),
+    store.getProfileStats(profile.id, year),
   ]);
+  // What anyone can see: published annotations, lists with books in them (drafts and empty lists stay off).
+  const marked = quotes.filter((q) => !q.isDraft).slice(0, 2);
+  const boards = lists.filter((l) => l.bookCount > 0).slice(0, 2);
   const load = async (cursor: string) => {
     "use server";
     return loadUserPostsAction(profile.id, cursor);
@@ -28,6 +37,13 @@ export default async function ProfileOverview({ params }: PageProps<"/u/[usernam
   return (
     <div className="grid gap-12 lg:grid-cols-[minmax(0,1fr)_280px]">
       <div className="min-w-0 space-y-12">
+        <section aria-label={`${year} so far`} className="flex flex-wrap items-baseline gap-x-8 gap-y-2 border-y border-line py-4">
+          <p><span className="font-serif text-3xl">{stats.booksReadThisYear}</span> <span className="text-sm text-ink-soft">finished in {year}</span></p>
+          <p><span className="font-serif text-3xl">{stats.booksRead}</span> <span className="text-sm text-ink-soft">read all time</span></p>
+          {stats.topGenres[0] && <p className="hand text-2xl text-burgundy">mostly {stats.topGenres[0].genre} this year</p>}
+          <Link href={`/u/${profile.username}/recap`} className="link-underline ml-auto text-sm text-burgundy">{own ? "Your" : "Their"} {year} yearbook</Link>
+        </section>
+
         <section aria-labelledby="favs">
           <SectionHeading kicker="the hall of fame" title="Favourite books" />
           <h2 id="favs" className="sr-only">Favourite books</h2>
@@ -37,6 +53,22 @@ export default async function ProfileOverview({ params }: PageProps<"/u/[usernam
             <BookshelfRow label="Favourite books" layout="fit" size="lg" fitCount={6} priorityCount={4} items={favourites.map((b) => ({ key: b.id, book: b }))} />
           )}
         </section>
+
+        {marked.length > 0 && (
+          <section aria-labelledby="marked">
+            <SectionHeading kicker="in the margins" title="Lately underlined" href={`/u/${profile.username}/quotes`} action="All marginalia" />
+            <h2 id="marked" className="sr-only">Lately underlined</h2>
+            <div className="grid gap-5 sm:grid-cols-2">{marked.map((q) => <AnnotationCard key={q.id} quote={q} href={`/quotes/${q.id}`} />)}</div>
+          </section>
+        )}
+
+        {boards.length > 0 && (
+          <section aria-labelledby="boards">
+            <SectionHeading kicker="pinned up" title="Lists" href={`/u/${profile.username}/lists`} action="All lists" />
+            <h2 id="boards" className="sr-only">Lists</h2>
+            <div className="grid gap-5 sm:grid-cols-2">{boards.map((l) => <ListCard key={l.id} list={l} showOwner={false} />)}</div>
+          </section>
+        )}
 
         <section aria-labelledby="activity">
           <SectionHeading kicker="lately" title="Recent activity" />

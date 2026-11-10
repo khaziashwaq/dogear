@@ -12,6 +12,7 @@ import { SectionHeading } from "@/components/ui/section-heading";
 import { SearchBox } from "@/components/ui/search-box";
 import { getStore, getViewer } from "@/lib/auth";
 import { GENRES, MOODS } from "@/lib/data/seed/books";
+import { MOOD_RULES } from "@/lib/moods";
 import { openLibrarySubject } from "@/lib/openlibrary";
 import type { Book, Profile, SavedBook } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -48,9 +49,20 @@ export default async function DiscoverPage({ searchParams }: PageProps<"/discove
   if (genre || mood) {
     const local = genre ? await store.booksByGenre(genre, 30) : await store.booksByMood(mood!, 30);
     let more: Book[] = [];
-    if (genre && local.length < 12) {
+    if (local.length < 12) {
+      // Fill out from Open Library: the genre's subject, or the headings that define the mood
+      // (src/lib/moods.ts), so these pages are never empty just because few books are shelved yet.
       const seen = new Set(local.map((b) => b.title.toLowerCase()));
-      more = (await openLibrarySubject(genre, 18)).filter((b) => !seen.has(b.title.toLowerCase()));
+      const subjects = genre ? [genre] : (MOOD_RULES[mood!]?.subjects ?? []);
+      const found = (await Promise.all(subjects.map((sub) => openLibrarySubject(sub, 18)))).flat();
+      for (const b of found) {
+        const k = b.title.toLowerCase();
+        if (!seen.has(k)) {
+          seen.add(k);
+          more.push(b);
+        }
+      }
+      more = more.slice(0, 24);
     }
     const m = MOODS.find((x) => x.key === mood);
     return (
@@ -81,14 +93,17 @@ export default async function DiscoverPage({ searchParams }: PageProps<"/discove
   }
 
   const viewer = await getViewer();
-  const [trending, feed, lists, readers, recent, fromCircle] = await Promise.all([
+  const [trending, feed, lists, suggested, recent, fromCircle, similar] = await Promise.all([
     store.trendingBooks(12),
     store.getFeed("discover", null, 30),
     store.popularLists(6),
     store.suggestedReaders(6),
     store.recentlyReviewedBooks(8),
     viewer ? lovedByFollowing(viewer.id) : Promise.resolve([]),
+    viewer ? store.similarReaders(6) : Promise.resolve([]),
   ]);
+  // Suggestions that aren't already in "similar taste".
+  const readers = suggested.filter((r) => !similar.some((s) => s.profile.id === r.id));
   const popularReviews = feed.items
     .flatMap((p) => (p.kind === "review" && p.review && !p.review.containsSpoilers ? [{ review: p.review, likes: p.likesCount }] : []))
     .sort((a, b) => b.likes - a.likes)
@@ -180,9 +195,32 @@ export default async function DiscoverPage({ searchParams }: PageProps<"/discove
         </section>
       )}
 
+      {similar.length > 0 && (
+        <section className="mt-14" id="similar">
+          <SectionHeading kicker="kindred spirits" title="Readers with similar taste" />
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
+            {similar.map((r) => (
+              <ReaderCard
+                key={r.profile.id}
+                profile={r.profile}
+                // A low percentage reads as a put-down; the reasons say enough on their own.
+                match={r.score >= 20 ? r.score : undefined}
+                why={[
+                  r.sharedBooks ? `${r.sharedBooks} ${r.sharedBooks === 1 ? "book" : "books"} in common` : null,
+                  r.agreement != null && r.agreement >= 0.75 ? "you rate them alike" : null,
+                  r.sharedFavourites ? `${r.sharedFavourites} shared ${r.sharedFavourites === 1 ? "favourite" : "favourites"}` : null,
+                  r.sharedAuthors.length ? `both love ${r.sharedAuthors.slice(0, 2).join(" & ")}` : null,
+                  !r.sharedAuthors.length && r.sharedGenres.length ? `both read ${r.sharedGenres.slice(0, 2).join(" & ")}` : null,
+                ].filter((x): x is string => Boolean(x)).slice(0, 3)}
+              />
+            ))}
+          </div>
+        </section>
+      )}
+
       {readers.length > 0 && (
         <section className="mt-14" id="readers">
-          <SectionHeading kicker="kindred spirits" title="Interesting readers" />
+          <SectionHeading kicker="say hello" title="Interesting readers" />
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
             {readers.map((r) => <ReaderCard key={r.id} profile={r} />)}
           </div>

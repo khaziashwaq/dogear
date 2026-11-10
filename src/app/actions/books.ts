@@ -38,6 +38,30 @@ export async function setShelfStatusAction(ref: BookRefInput, value: ShelfStatus
   });
 }
 
+const logSchema = z.object({
+  finishedOn: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(),
+  rating: z.number().min(0.5).max(5).multipleOf(0.5).nullable(),
+  reread: z.boolean(),
+  notes: z.string().trim().max(2000).nullable().transform((v) => v || null),
+  review: z
+    .object({ title: z.string().trim().max(140).nullable(), body: z.string().trim().min(1).max(20000), containsSpoilers: z.boolean() })
+    .nullable(),
+  quote: z.object({ body: z.string().trim().min(1).max(2000), page: z.string().trim().max(20).nullable() }).nullable(),
+  visibility: z.enum(["public", "followers", "private"]),
+  share: z.boolean(),
+});
+
+/** "I finished this": one atomic write for the diary, the Read shelf, rating, and anything optional. */
+export async function logBookAction(ref: BookRefInput, input: z.input<typeof logSchema>) {
+  return run(async () => {
+    const store = await getStore();
+    const book = await resolveBook(store, ref);
+    const result = await store.logBook({ bookId: book.id, ...logSchema.parse(input) });
+    touch(book.slug);
+    return { book, result, userBook: await store.getUserBook(book.id) };
+  });
+}
+
 /** Put a recent shelf move back. The record only ever reaches the caller's own rows. */
 export async function undoShelfMoveAction(undo: Record<string, unknown>) {
   return run(async () => {

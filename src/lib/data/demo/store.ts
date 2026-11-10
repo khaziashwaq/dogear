@@ -6,7 +6,15 @@ import type {
   BookStats,
   Comment,
   Compatibility,
+  FeedFilter,
+  Invite,
+  InvitePreview,
+  ListSort,
+  ReadingRecap,
+  SimilarReader,
   ListInput,
+  LogBookInput,
+  LogBookResult,
   Notification,
   Page,
   Post,
@@ -38,7 +46,7 @@ import type {
 import { normaliseRating, slugify } from "@/lib/utils";
 import { AuthError, NotFoundError, ValidationError, computeHistogram, type DataStore } from "../store";
 import { removeDemoUploads } from "./uploads";
-import { buildStats, cleanShelves, compatibilityScore, sortShelf } from "../shared";
+import { buildRecap, buildStats, cleanShelves, compatibilityScore, similarityScore, sortShelf } from "../shared";
 import {
   getDemoDB,
   newId,
@@ -204,6 +212,11 @@ export class DemoStore implements DataStore {
       items: slice.map((p) => this.hydratePost(p)),
       nextCursor: sorted.length > limit ? encodeCursor(slice[slice.length - 1]) : null,
     };
+  }
+  /** One rating per reader and book: the shelf holds it, and the reader's reviews of the book show it. */
+  private rate(row: UserBookRow, rating: number | null) {
+    row.rating = rating;
+    this.db.reviews.filter((r) => r.userId === row.userId && r.bookId === row.bookId).forEach((r) => (r.rating = rating));
   }
   private ensureUserBook(bookId: string): UserBookRow {
     const me = this.me();
@@ -451,6 +464,88 @@ export class DemoStore implements DataStore {
     this.commit();
     return { userBook: result, changed: true, undo: { book_id: bookId, at: nowIso(), prev, sessions: before, posts_created: posts } };
   }
+  /** Mirrors public.import_shelf_entry. */
+  async importShelfEntry(input: { bookId: string; status: ShelfStatus; rating: number | null; finishedOn: string | null; shelves: string[]; overwrite: boolean }) {
+    const me = this.me();
+    this.book(input.bookId);
+    const prev = this.db.userBooks.find((u) => u.userId === me && u.bookId === input.bookId);
+    if (prev?.status && !input.overwrite) return "skipped" as const;
+    const row = this.ensureUserBook(input.bookId);
+    const rating = normaliseRating(input.rating);
+    Object.assign(row, {
+      status: input.status,
+      finishedAt: (input.status === "read" ? input.finishedOn : null) ?? row.finishedAt,
+      shelves: cleanShelves([...row.shelves, ...input.shelves]),
+      updatedAt: nowIso(),
+    });
+    if (rating != null) this.rate(row, rating);
+    if (input.status === "read" && input.finishedOn && !this.db.sessions.some((x) => x.userId === me && x.bookId === input.bookId && x.status === "finished" && x.finishedOn === input.finishedOn)) {
+      this.db.sessions.push({ id: newId(), userId: me, bookId: input.bookId, status: "finished", startedOn: null, finishedOn: input.finishedOn, isReread: false, notes: null, createdAt: nowIso() });
+    }
+    this.commit();
+    return prev?.status ? ("updated" as const) : ("imported" as const);
+  }
+  /** Mirrors public.log_book; validates everything before writing so a failure leaves nothing behind. */
+  async logBook(input: LogBookInput): Promise<LogBookResult> {
+    const me = this.me();
+    this.book(input.bookId);
+    const day = input.finishedOn ?? nowIso().slice(0, 10);
+    if (day > new Date(Date.now() + 86_400_000).toISOString().slice(0, 10)) throw new ValidationError("That date is in the future");
+    const notes = input.notes?.trim() || null;
+    const reviewBody = input.review?.body.trim() || null;
+    const quoteBody = input.quote?.body.trim() || null;
+    if (notes && notes.length > 2000) throw new ValidationError("Notes are limited to 2,000 characters.");
+    if (reviewBody && reviewBody.length > 20000) throw new ValidationError("Reviews are limited to 20,000 characters.");
+    if (quoteBody && quoteBody.length > 2000) throw new ValidationError("Lines are limited to 2,000 characters.");
+    const rating = normaliseRating(input.rating);
+
+    const mine = this.db.sessions.filter((x) => x.userId === me && x.bookId === input.bookId);
+    const open = mine.filter((x) => x.status === "reading").sort(byNewest)[0];
+    let sessionId: string;
+    if (open) {
+      Object.assign(open, {
+        status: "finished", finishedOn: day, startedOn: open.startedOn && open.startedOn > day ? day : open.startedOn,
+        isReread: open.isReread || input.reread, notes: notes ?? open.notes,
+      });
+      sessionId = open.id;
+    } else {
+      const same = input.reread ? null : mine.find((x) => x.status === "finished" && x.finishedOn === day);
+      if (same) {
+        same.notes = notes ?? same.notes;
+        sessionId = same.id;
+      } else {
+        const row: SessionRow = { id: newId(), userId: me, bookId: input.bookId, status: "finished", startedOn: null, finishedOn: day, isReread: input.reread, notes, createdAt: nowIso() };
+        this.db.sessions.push(row);
+        sessionId = row.id;
+      }
+    }
+    const ub = this.ensureUserBook(input.bookId);
+    Object.assign(ub, { status: "read", finishedAt: day, updatedAt: nowIso() });
+    if (rating != null) this.rate(ub, rating);
+
+    let reviewId: string | null = null;
+    if (reviewBody) {
+      reviewId = (await this.createReview({
+        bookId: input.bookId, rating, title: input.review?.title?.trim() || null, body: reviewBody,
+        containsSpoilers: input.review?.containsSpoilers ?? false, isReread: input.reread, visibility: input.visibility,
+      })).id;
+    }
+    let quoteId: string | null = null;
+    if (quoteBody) {
+      quoteId = (await this.createQuote({
+        bookId: input.bookId, body: quoteBody, page: input.quote?.page?.trim() || null, commentary: null, visibility: input.visibility,
+        highlight: "butter", tags: [], isDraft: false,
+      })).id;
+    }
+    let postId: string | null = null;
+    if (input.share && !reviewId) {
+      const p = { ...blankPost(me, "finished", input.bookId), visibility: input.visibility };
+      this.db.posts.push(p);
+      postId = p.id;
+    }
+    this.commit();
+    return { sessionId, reviewId, quoteId, postId };
+  }
   async undoShelfMove(undo: ShelfUndo) {
     const me = this.me();
     const bookId = String(undo.book_id ?? "");
@@ -468,7 +563,7 @@ export class DemoStore implements DataStore {
   }
   async setRating(bookId: string, rating: number | null) {
     const row = this.ensureUserBook(bookId);
-    row.rating = normaliseRating(rating);
+    this.rate(row, normaliseRating(rating));
     row.updatedAt = nowIso();
     this.commit();
     return this.userBook(row);
@@ -571,15 +666,15 @@ export class DemoStore implements DataStore {
   async createReview(input: ReviewInput) {
     const me = this.me();
     this.book(input.bookId);
-    const row: ReviewRow = { id: newId(), userId: me, ...input, rating: normaliseRating(input.rating), createdAt: nowIso(), updatedAt: nowIso() };
+    if (!input.body.trim()) throw new ValidationError("Write something first.");
+    const ub = this.ensureUserBook(input.bookId);
+    const rating = normaliseRating(input.rating) ?? ub.rating;
+    const row: ReviewRow = { id: newId(), userId: me, ...input, rating, createdAt: nowIso(), updatedAt: nowIso() };
     this.db.reviews.push(row);
     this.db.posts.push({ ...blankPost(me, "review", input.bookId), reviewId: row.id, visibility: row.visibility });
-    if (row.rating != null) {
-      const ub = this.ensureUserBook(input.bookId);
-      ub.rating = row.rating;
-      if (!ub.status) ub.status = "read";
-      ub.updatedAt = nowIso();
-    }
+    if (!ub.status) ub.status = "read";
+    this.rate(ub, rating);
+    ub.updatedAt = nowIso();
     this.commit();
     return this.review(row);
   }
@@ -589,10 +684,7 @@ export class DemoStore implements DataStore {
     if (!row) throw new NotFoundError("Review not found");
     Object.assign(row, { ...input, bookId: row.bookId, rating: normaliseRating(input.rating), updatedAt: nowIso() });
     this.db.posts.filter((p) => p.reviewId === id).forEach((p) => (p.visibility = row.visibility));
-    if (row.rating != null) {
-      const ub = this.ensureUserBook(row.bookId);
-      ub.rating = row.rating;
-    }
+    if (row.rating != null) this.rate(this.ensureUserBook(row.bookId), row.rating);
     this.commit();
     return this.review(row);
   }
@@ -712,6 +804,20 @@ export class DemoStore implements DataStore {
       .slice(0, limit)
       .map((x) => x.s);
   }
+  async searchLists(q: string, sort: ListSort, limit = 24) {
+    const s = q.trim().toLowerCase();
+    const lists = this.db.lists
+      .filter((l) => l.visibility === "public" && this.canView(l.userId, l.visibility))
+      .filter((l) => !s || l.title.toLowerCase().includes(s) || (l.description ?? "").toLowerCase().includes(s))
+      .map((l) => this.listSummary(l))
+      .filter((l) => l.bookCount > 0);
+    const by: Record<ListSort, (a: ReadingList, b: ReadingList) => number> = {
+      popular: (a, b) => b.followersCount - a.followersCount || (a.updatedAt < b.updatedAt ? 1 : -1),
+      recent: (a, b) => (a.updatedAt < b.updatedAt ? 1 : -1),
+      books: (a, b) => b.bookCount - a.bookCount,
+    };
+    return lists.sort(by[sort]).slice(0, limit);
+  }
   async followedLists() {
     if (!this.viewerId) return [];
     const ids = new Set(this.db.listFollows.filter((f) => f.userId === this.viewerId).map((f) => f.listId));
@@ -765,6 +871,10 @@ export class DemoStore implements DataStore {
   }
   async reorderList(listId: string, bookIds: string[]) {
     this.ownList(listId);
+    const current = this.db.listBooks.filter((lb) => lb.listId === listId).map((lb) => lb.bookId).sort();
+    if (JSON.stringify(current) !== JSON.stringify([...bookIds].sort())) {
+      throw new ValidationError("The list changed while you were reordering it. Reload and try again.");
+    }
     bookIds.forEach((bookId, i) => {
       const row = this.db.listBooks.find((lb) => lb.listId === listId && lb.bookId === bookId);
       if (row) row.position = i;
@@ -787,7 +897,8 @@ export class DemoStore implements DataStore {
   }
 
   // ── posts & feed ────────────────────────────────────────────────────
-  async getFeed(tab: "following" | "discover", cursor: string | null, limit = 12) {
+  async getFeed(tab: "following" | "discover", cursor: string | null, limit = 12, filter: FeedFilter = "all") {
+    const kinds = filter === "all" ? null : new Set<string>(FEED_KINDS[filter]);
     let rows: PostRow[];
     if (tab === "following") {
       const me = this.me();
@@ -796,6 +907,7 @@ export class DemoStore implements DataStore {
     } else {
       rows = this.db.posts.filter((p) => p.visibility === "public" && p.userId !== this.viewerId && !this.mutedByViewer(p.userId) && this.visiblePost(p));
     }
+    if (kinds) rows = rows.filter((p) => kinds.has(p.kind));
     return this.page(rows, cursor, limit);
   }
   async getUserPosts(userId: string, cursor: string | null, limit = 12) {
@@ -893,12 +1005,12 @@ export class DemoStore implements DataStore {
     this.removePosts((p) => p.userId === me && p.repostOfId === postId);
     this.commit();
   }
-  async listBookmarks(cursor: string | null, limit = 12): Promise<Page<Post>> {
+  async listBookmarks(cursor: string | null, limit = 12, kind?: Post["kind"]): Promise<Page<Post>> {
     const me = this.me();
     const marks = this.db.bookmarks.filter((b) => b.userId === me).map((b) => ({ ...b, id: b.postId })).filter(beforeCursor(cursor)).sort(byNewest);
     const visible = marks.filter((m) => {
       const p = this.db.posts.find((x) => x.id === m.postId);
-      return p && this.visiblePost(p);
+      return p && (!kind || p.kind === kind) && this.visiblePost(p);
     });
     const slice = visible.slice(0, limit);
     return {
@@ -914,7 +1026,7 @@ export class DemoStore implements DataStore {
     const rows = this.db.comments
       .filter((c) => c.postId === postId && !this.blockedBetween(c.userId, this.viewerId))
       .sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));
-    const toComment = (c: (typeof rows)[number]): Comment => ({ ...c, author: this.profile(c.userId), replies: [] });
+    const toComment = (c: (typeof rows)[number]): Comment => ({ ...c, editedAt: c.editedAt ?? null, author: this.profile(c.userId), replies: [] });
     const top = rows.filter((c) => !c.parentId).map(toComment);
     const byId = new Map(top.map((c) => [c.id, c]));
     for (const r of rows.filter((c) => c.parentId)) byId.get(r.parentId!)?.replies.push(toComment(r));
@@ -938,7 +1050,19 @@ export class DemoStore implements DataStore {
       pushNotification(this.db, { recipientId: p.userId, actorId: me, kind: "comment", postId, commentId: row.id, listId: null, recommendationId: null });
     }
     this.commit();
-    return { ...row, author: this.profile(me), replies: [] };
+    return { ...row, editedAt: null, author: this.profile(me), replies: [] };
+  }
+  async updateComment(id: string, body: string) {
+    const me = this.me();
+    const text = body.trim();
+    if (!text) throw new ValidationError("Comment can't be empty.");
+    if (text.length > 2000) throw new ValidationError("Comments are limited to 2,000 characters.");
+    const c = this.db.comments.find((x) => x.id === id && x.userId === me);
+    if (!c) throw new NotFoundError("Comment not found");
+    c.body = text;
+    c.editedAt = nowIso();
+    this.commit();
+    return { ...c, editedAt: c.editedAt, author: this.profile(me), replies: [] };
   }
   async deleteComment(id: string) {
     const me = this.me();
@@ -1024,6 +1148,117 @@ export class DemoStore implements DataStore {
   async listRecommendationsReceived(limit = 30) {
     const me = this.me();
     return this.db.recommendations.filter((r) => r.recipientId === me).sort(byNewest).slice(0, limit).map((r) => this.recommendation(r));
+  }
+
+  // ── discovery & invites ─────────────────────────────────────────────
+  async similarReaders(limit = 8): Promise<SimilarReader[]> {
+    const me = this.viewerId;
+    if (!me) return [];
+    const self = this.db.profiles.find((p) => p.id === me)!;
+    const shelfOf = (id: string) => this.db.userBooks.filter((u) => u.userId === id && ((u.status && u.status !== "want_to_read") || u.isFavourite));
+    const mine = new Map(shelfOf(me).map((u) => [u.bookId, u]));
+    return this.db.profiles
+      .filter((p) => p.onboarded && p.id !== me && !this.blockedBetween(p.id, me) && !this.follows(me, p.id))
+      .map((p) => {
+        const shared = shelfOf(p.id).filter((u) => mine.has(u.bookId));
+        const pairs = shared.filter((u) => u.rating != null && mine.get(u.bookId)!.rating != null);
+        const diff = pairs.length ? pairs.reduce((s, u) => s + Math.abs(u.rating! - mine.get(u.bookId)!.rating!), 0) / pairs.length : null;
+        const sharedAuthors = p.favouriteAuthors.filter((a) => self.favouriteAuthors.includes(a));
+        const sharedGenres = p.favouriteGenres.filter((g) => self.favouriteGenres.includes(g));
+        const sharedFavourites = shared.filter((u) => u.isFavourite && mine.get(u.bookId)!.isFavourite).length;
+        return {
+          profile: this.profile(p.id), sharedBooks: shared.length, sharedFavourites, sharedAuthors, sharedGenres,
+          agreement: diff == null ? null : Math.round((1 - diff / 4.5) * 100) / 100,
+          score: similarityScore({ sharedBooks: shared.length, diff, sharedAuthors: sharedAuthors.length, sharedGenres: sharedGenres.length, sharedFavourites }),
+        };
+      })
+      .filter((r) => r.sharedBooks > 0 || r.sharedAuthors.length > 0 || r.sharedGenres.length > 0)
+      .sort((a, b) => b.score - a.score || b.profile.followersCount - a.profile.followersCount)
+      .slice(0, Math.min(limit, 30));
+  }
+  async createInvite(opts: { expiresInDays: number | null; maxUses: number | null }): Promise<Invite> {
+    const me = this.me();
+    const invites = (this.db.invites ??= []);
+    if (invites.filter((i) => i.inviterId === me && Date.parse(i.createdAt) > Date.now() - 86_400_000).length >= 20) {
+      throw new ValidationError("Too many invite links today. Try again tomorrow.");
+    }
+    const { randomBytes } = await import("node:crypto");
+    const row = {
+      code: randomBytes(12).toString("base64url"), inviterId: me, createdAt: nowIso(),
+      expiresAt: opts.expiresInDays ? new Date(Date.now() + opts.expiresInDays * 86_400_000).toISOString() : null, maxUses: opts.maxUses, uses: 0,
+    };
+    invites.push(row);
+    this.commit();
+    return { code: row.code, createdAt: row.createdAt, expiresAt: row.expiresAt, maxUses: row.maxUses, uses: 0, closed: false };
+  }
+  async listInvites() {
+    const me = this.me();
+    return (this.db.invites ?? [])
+      .filter((i) => i.inviterId === me)
+      .sort(byNewestFollow)
+      .map(({ inviterId: _i, ...rest }) => {
+        void _i;
+        return { ...rest, closed: (rest.expiresAt != null && Date.parse(rest.expiresAt) <= Date.now()) || (rest.maxUses != null && rest.uses >= rest.maxUses) };
+      });
+  }
+  async deleteInvite(code: string) {
+    const me = this.me();
+    this.db.invites = (this.db.invites ?? []).filter((i) => !(i.code === code && i.inviterId === me));
+    this.commit();
+  }
+  async invitePreview(code: string): Promise<InvitePreview | null> {
+    const inv = (this.db.invites ?? []).find((i) => i.code === code);
+    if (!inv) return null;
+    const p = this.profile(inv.inviterId);
+    return {
+      valid: (!inv.expiresAt || Date.parse(inv.expiresAt) > Date.now()) && (inv.maxUses == null || inv.uses < inv.maxUses),
+      inviter: { username: p.username, displayName: p.displayName, avatarUrl: p.avatarUrl, favouriteGenres: p.favouriteGenres },
+    };
+  }
+  async redeemInvite(code: string) {
+    const me = this.me();
+    const inv = (this.db.invites ?? []).find((i) => i.code === code);
+    const self = this.db.profiles.find((p) => p.id === me);
+    const redemptions = (this.db.redemptions ??= []);
+    if (
+      !inv || inv.inviterId === me || (inv.expiresAt && Date.parse(inv.expiresAt) <= Date.now()) || (inv.maxUses != null && inv.uses >= inv.maxUses) ||
+      redemptions.some((r) => r.inviteeId === me) || !self || Date.parse(self.createdAt) < Date.now() - 7 * 86_400_000
+    ) {
+      return false;
+    }
+    redemptions.push({ inviteeId: me, code, createdAt: nowIso() });
+    inv.uses += 1;
+    if (!this.blockedBetween(me, inv.inviterId) && !this.follows(me, inv.inviterId)) {
+      this.db.follows.push({ followerId: me, followingId: inv.inviterId, createdAt: nowIso() });
+      pushNotification(this.db, { recipientId: inv.inviterId, actorId: me, kind: "follow", postId: null, commentId: null, listId: null, recommendationId: null });
+    }
+    this.commit();
+    return true;
+  }
+  async readingRecap(userId: string, year: number, month: number | null): Promise<ReadingRecap> {
+    if (this.blockedBetween(userId, this.viewerId)) return buildRecap(year, month, [], [], []);
+    const shelf = this.db.userBooks.filter((u) => u.userId === userId).map((u) => ({ ...u, book: this.book(u.bookId) }));
+    const sessions = this.viewerId === userId ? this.db.sessions.filter((x) => x.userId === userId) : [];
+    const quotes = this.db.quotes
+      .filter((q) => q.userId === userId && !q.isDraft && this.canView(userId, q.visibility))
+      .map((q) => {
+        const post = this.db.posts.find((p) => p.quoteId === q.id);
+        return { id: q.id, bookId: q.bookId, body: q.body, createdAt: q.createdAt, likes: post ? this.db.likes.filter((l) => l.postId === post.id).length : 0 };
+      });
+    // Recap books can be quoted without being shelved: make sure their records are available.
+    const known = new Set(shelf.map((u) => u.bookId));
+    for (const q of quotes) if (!known.has(q.bookId)) {
+      known.add(q.bookId);
+      shelf.push({ ...this.ensureShelfLike(userId, q.bookId), book: this.book(q.bookId) });
+    }
+    return buildRecap(year, month, shelf, sessions, quotes);
+  }
+  /** A read-only stand-in shelf row (status null) so quoted-but-unshelved books have a record. */
+  private ensureShelfLike(userId: string, bookId: string): UserBookRow {
+    return {
+      id: `virtual-${bookId}`, userId, bookId, status: null, rating: null, isFavourite: false, favouritedAt: null, shelves: [], progressPages: null,
+      startedAt: null, finishedAt: null, createdAt: nowIso(), updatedAt: nowIso(),
+    };
   }
 
   // ── safety & your data ──────────────────────────────────────────────
@@ -1144,14 +1379,15 @@ export class DemoStore implements DataStore {
 
   // ── stats ───────────────────────────────────────────────────────────
   async getProfileStats(userId: string, year: number): Promise<ProfileStats> {
+    if (this.blockedBetween(userId, this.viewerId)) return buildStats(year, [], [], { reviews: 0, quotes: 0, lists: 0 });
     const shelf = this.db.userBooks.filter((u) => u.userId === userId);
-    return buildStats(
-      year,
-      shelf.map((u) => ({ ...u, book: this.book(u.bookId) })),
-      this.db.reviews.filter((r) => r.userId === userId && this.canView(userId, r.visibility)).length,
-      this.db.quotes.filter((q) => q.userId === userId && this.canView(userId, q.visibility)).length,
-      this.db.lists.filter((l) => l.userId === userId && this.canView(userId, l.visibility)).length,
-    );
+    // The diary is private: only the reader's own stats use it (as RLS does in Supabase).
+    const sessions = this.viewerId === userId ? this.db.sessions.filter((x) => x.userId === userId) : [];
+    return buildStats(year, shelf.map((u) => ({ ...u, book: this.book(u.bookId) })), sessions, {
+      reviews: this.db.reviews.filter((r) => r.userId === userId && this.canView(userId, r.visibility)).length,
+      quotes: this.db.quotes.filter((q) => q.userId === userId && !q.isDraft && this.canView(userId, q.visibility)).length,
+      lists: this.db.lists.filter((l) => l.userId === userId && this.canView(userId, l.visibility)).length,
+    });
   }
   async compatibility(otherId: string): Promise<Compatibility | null> {
     if (!this.viewerId || otherId === this.viewerId) return null;
@@ -1165,6 +1401,14 @@ export class DemoStore implements DataStore {
     return { score: compatibilityScore(shared, sharedGenres.length), sharedBooks: shared.length, sharedGenres };
   }
 }
+
+/** Post kinds behind each feed filter (same as the Supabase store). */
+const FEED_KINDS: Record<Exclude<FeedFilter, "all">, PostRow["kind"][]> = {
+  reviews: ["review"],
+  annotations: ["quote"],
+  reading: ["started", "finished", "update"],
+  lists: ["list"],
+};
 
 // ── pure helpers (shared with the Supabase store) ──────────────────────
 export function toBook(row: BookRow): SavedBook {

@@ -124,3 +124,157 @@ describe("demo store: safety", () => {
     assert.equal(await as(null).getProfileById(ids.cyd), null);
   });
 });
+
+describe("demo store: reading life", () => {
+  const log = (s: Store, bookId: string, extra: Partial<Parameters<Store["logBook"]>[0]> = {}) =>
+    s.logBook({ bookId, finishedOn: null, rating: null, reread: false, notes: null, review: null, quote: null, visibility: "public", share: false, ...extra });
+
+  test("one rating: a review's stars become the shelf rating, a new shelf rating updates the review", async () => {
+    const s = as(ids.ada);
+    const b = book("Rated");
+    const r = await s.createReview({ bookId: b, rating: 4.5, title: null, body: "Lovely", containsSpoilers: false, isReread: false, visibility: "public" });
+    assert.equal((await s.getUserBook(b))?.rating, 4.5);
+    await s.setRating(b, 3);
+    assert.equal((await s.getReview(r.id))?.rating, 3);
+  });
+  test("logging closes the read in progress, back-dates safely, and posts nothing unless asked", async () => {
+    const s = as(ids.ada);
+    const b = book("Logged");
+    const before = (await s.getUserPosts(ids.ada, null, 200)).items.length;
+    await s.setShelfStatus(b, "reading");
+    await log(s, b, { finishedOn: "2026-03-14", rating: 4, notes: "Cried on the train" });
+    const sessions = await s.listSessions(b);
+    assert.equal(sessions.length, 1);
+    assert.equal(sessions[0].status, "finished");
+    assert.equal(sessions[0].finishedOn, "2026-03-14");
+    assert.ok(!sessions[0].startedOn || sessions[0].startedOn <= "2026-03-14");
+    assert.equal((await s.getUserBook(b))?.status, "read");
+    assert.equal((await s.getUserPosts(ids.ada, null, 200)).items.length, before);
+  });
+  test("a review and a line in one go; the review stands in for the 'finished' post", async () => {
+    const s = as(ids.ada);
+    const b = book("Everything");
+    const r = await log(s, b, { rating: 5, review: { title: null, body: "Loved it", containsSpoilers: false }, quote: { body: "All that we see", page: null }, share: true });
+    assert.ok(r.reviewId && r.quoteId);
+    assert.equal(r.postId, null);
+  });
+  test("the same day twice is one read; a re-read is another", async () => {
+    const s = as(ids.ada);
+    const b = book("Twice");
+    await log(s, b, { finishedOn: "2026-05-01" });
+    await log(s, b, { finishedOn: "2026-05-01", notes: "second thoughts" });
+    await log(s, b, { finishedOn: "2026-06-01", reread: true });
+    const rows = (await s.listSessions(b)).map((x) => [x.finishedOn, x.isReread, x.notes]).sort();
+    assert.deepEqual(rows, [["2026-05-01", false, "second thoughts"], ["2026-06-01", true, null]]);
+  });
+  test("an invalid part saves nothing", async () => {
+    const s = as(ids.ada);
+    const b = book("Atomic");
+    await assert.rejects(log(s, b, { rating: 4, quote: { body: "x".repeat(2001), page: null } }));
+    assert.equal(await s.getUserBook(b), null);
+    assert.equal((await s.listSessions(b)).length, 0);
+  });
+  test("stats: year-scoped, re-reads for the owner, pages only where known, diary private", async () => {
+    const owner = as(ids.ben);
+    const long = book("Long");
+    const db = (await import("../../src/lib/data/demo/db.ts")).getDemoDB();
+    db.books.find((x) => x.id === long)!.pageCount = 400;
+    const short = book("Short");
+    await log(owner, long, { finishedOn: "2025-02-10", rating: 4 });
+    await log(owner, long, { finishedOn: "2025-09-01", reread: true });
+    await log(owner, short, { finishedOn: "2025-02-20", rating: 2 });
+    const mine = await owner.getProfileStats(ids.ben, 2025);
+    assert.equal(mine.booksReadThisYear, 3);
+    assert.equal(mine.distinctBooksThisYear, 2);
+    assert.equal(mine.rereadsThisYear, 1);
+    assert.equal(mine.pagesReadThisYear, 400);
+    assert.equal(mine.booksWithPagesThisYear, 1);
+    assert.equal(mine.averageRating, 3);
+    const theirs = await as(ids.ada).getProfileStats(ids.ben, 2025);
+    assert.equal(theirs.rereadsThisYear, 0);
+    assert.equal(theirs.sessionsThisYear, 0);
+  });
+  test("reordering must cover the whole list", async () => {
+    const s = as(ids.ada);
+    const list = await s.createList({ title: "Order", description: null, coverStyle: "rose", coverImageUrl: null, visibility: "public", isRanked: true });
+    const [x, y] = [book("X"), book("Y")];
+    await s.addBookToList(list.id, x, null);
+    await s.addBookToList(list.id, y, null);
+    await s.reorderList(list.id, [y, x]);
+    assert.deepEqual((await s.getList(list.id))?.books.map((b) => b.bookId), [y, x]);
+    await assert.rejects(s.reorderList(list.id, [y]));
+  });
+  test("comments can be edited by their author only", async () => {
+    const b = book("Talk");
+    const post = await as(ids.ada).createPost({ kind: "update", bookId: b, body: "p.1", progressPages: null, progressPercent: null, visibility: "public" });
+    const c = await as(ids.ben).addComment(post.id, "Hello", null);
+    const edited = await as(ids.ben).updateComment(c.id, "Hello again");
+    assert.equal(edited.body, "Hello again");
+    assert.ok(edited.editedAt);
+    await assert.rejects(as(ids.ada).updateComment(c.id, "Hijacked"));
+  });
+});
+
+describe("demo store: social & discovery", () => {
+  test("feed filters keep only the chosen kinds", async () => {
+    const page = await as(ids.ada).getFeed("discover", null, 50, "reviews");
+    assert.ok(page.items.every((p) => p.kind === "review"));
+  });
+  test("similar readers: never yourself, never blocked or already followed, best match first", async () => {
+    const s = as(ids.ada);
+    const rows = await s.similarReaders(10);
+    assert.ok(rows.every((r) => r.profile.id !== ids.ada));
+    const following = new Set(await s.followingIds());
+    assert.ok(rows.every((r) => !following.has(r.profile.id)));
+    for (let i = 1; i < rows.length; i++) assert.ok(rows[i - 1].score >= rows[i].score);
+  });
+  test("invites: preview, redeem once (new readers only), follow the inviter, count without names", async () => {
+    const host = as(ids.ada);
+    const inv = await host.createInvite({ expiresInDays: 7, maxUses: null });
+    const preview = await as(null).invitePreview(inv.code);
+    assert.equal(preview?.valid, true);
+    const { getDemoDB, newId } = await import("../../src/lib/data/demo/db.ts");
+    const db = getDemoDB();
+    const fresh = newId();
+    db.profiles.push({ ...db.profiles.find((p) => p.id === ids.ben)!, id: fresh, username: "newbie", createdAt: new Date().toISOString() });
+    assert.equal(await as(fresh).redeemInvite(inv.code), true);
+    assert.equal(await as(fresh).redeemInvite(inv.code), false);
+    assert.ok((await as(fresh).followingIds()).includes(ids.ada));
+    assert.equal((await host.listInvites()).find((i) => i.code === inv.code)?.uses, 1);
+    // An established reader (joined long ago) can't claim an invite.
+    assert.equal(await as(ids.ben).redeemInvite(inv.code), false);
+  });
+  test("recap: a month and a year, nothing invented", async () => {
+    const s = as(ids.ben);
+    const b = book("Recap");
+    await s.logBook({ bookId: b, finishedOn: "2024-04-02", rating: 5, reread: false, notes: null, review: null, quote: null, visibility: "public", share: false });
+    const april = await s.readingRecap(ids.ben, 2024, 4);
+    assert.equal(april.completions, 1);
+    assert.equal(april.favouriteBook?.id, b);
+    assert.equal(april.lovedLine, null);
+    const march = await s.readingRecap(ids.ben, 2024, 3);
+    assert.equal(march.completions, 0);
+    assert.equal(march.favouriteBook, null);
+  });
+  test("import: skips books already shelved unless overwriting; never posts", async () => {
+    const s = as(ids.ada);
+    const b = book("Imported");
+    const before = (await s.getUserPosts(ids.ada, null, 500)).items.length;
+    assert.equal(await s.importShelfEntry({ bookId: b, status: "read", rating: 4, finishedOn: "2019-06-01", shelves: ["classics"], overwrite: false }), "imported");
+    assert.equal(await s.importShelfEntry({ bookId: b, status: "want_to_read", rating: null, finishedOn: null, shelves: [], overwrite: false }), "skipped");
+    assert.equal((await s.getUserBook(b))?.status, "read");
+    assert.equal((await s.getUserPosts(ids.ada, null, 500)).items.length, before);
+    const undated = book("Undated");
+    await s.importShelfEntry({ bookId: undated, status: "read", rating: null, finishedOn: null, shelves: [], overwrite: false });
+    const stats = await s.getProfileStats(ids.ada, new Date().getFullYear());
+    assert.ok(!(await s.readingRecap(ids.ada, new Date().getFullYear(), null)).timeline.some((t) => t.id === undated));
+    assert.ok(stats.booksRead > 0);
+  });
+  test("list search finds public lists with books, by title", async () => {
+    const s = as(ids.ada);
+    const list = await s.createList({ title: "Rainy Sunday reads", description: null, coverStyle: "rose", coverImageUrl: null, visibility: "public", isRanked: false });
+    await s.addBookToList(list.id, book("Rainy"), null);
+    const found = await as(ids.ben).searchLists("rainy sunday", "popular");
+    assert.ok(found.some((l) => l.id === list.id));
+  });
+});

@@ -46,6 +46,8 @@ export async function finishOnboardingAction(followIds: string[]) {
     const store = await getStore();
     for (const id of z.array(z.string()).max(50).parse(followIds)) await store.follow(id);
     await store.updateProfile({ onboarded: true });
+    const { claimPendingInvite } = await import("@/app/actions/invites");
+    await claimPendingInvite();
     revalidatePath("/", "layout");
   });
 }

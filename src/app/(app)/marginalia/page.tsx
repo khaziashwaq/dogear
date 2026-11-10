@@ -21,14 +21,16 @@ export default async function MarginaliaPage({ searchParams }: PageProps<"/margi
   const [store, viewer] = await Promise.all([getStore(), getViewer()]);
   const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : null);
 
-  const tabs = (viewer ? ["following", "popular", "recent"] : ["popular", "recent"]) as MarginaliaQuery["tab"][];
+  const tabs = (viewer ? ["following", "popular", "recent", "saved"] : ["popular", "recent"]) as MarginaliaQuery["tab"][];
   const tab = tabs.find((t) => t === sp.tab) ?? (viewer ? "following" : "popular");
   const genre = (GENRES as readonly string[]).includes(str(sp.genre) ?? "") ? str(sp.genre) : null;
   const tag = str(sp.tag)?.toLowerCase().replace(/^#/, "").slice(0, 32) ?? null;
   const book = str(sp.book) ? await store.getBookBySlug(str(sp.book)!.toLowerCase()) : null;
 
   const query: MarginaliaQuery = { tab, genre, tag, bookId: book?.id ?? null };
-  const [first, tags] = await Promise.all([store.listMarginalia(query, null), store.marginaliaTags(16)]);
+  const saved = tab === "saved";
+  // Saved: the annotations you bookmarked (from any reader), newest first; the filters don't apply.
+  const [first, tags] = await Promise.all([saved ? store.listBookmarks(null, 18, "quote") : store.listMarginalia(query, null), store.marginaliaTags(16)]);
 
   const href = (patch: Record<string, string | null>) => {
     const p = new URLSearchParams();
@@ -64,7 +66,7 @@ export default async function MarginaliaPage({ searchParams }: PageProps<"/margi
       </nav>
 
       {/* filters */}
-      <div className="mb-8 space-y-3">
+      <div className={cn("mb-8 space-y-3", saved && "hidden")}>
         <div className="flex flex-wrap items-center gap-2">
           {book ? (
             <Link href={href({ book: null })} className={chipClass("ink", true, "shrink-0")} aria-label={`Remove book filter: ${book.title}`}>
@@ -102,9 +104,11 @@ export default async function MarginaliaPage({ searchParams }: PageProps<"/margi
 
       {first.items.length === 0 ? (
         <EmptyState
-          title={filtered ? "Nothing marked here yet" : tab === "following" ? "Your circle hasn't marked anything yet" : "No marginalia yet"}
+          title={saved ? "Nothing saved yet" : filtered ? "Nothing marked here yet" : tab === "following" ? "Your circle hasn't marked anything yet" : "No marginalia yet"}
           body={
-            filtered
+            saved
+              ? "Tap the bookmark on any annotation to keep it here."
+              : filtered
               ? "No one has annotated this yet. Try another filter, or be the first."
               : tab === "following"
                 ? "When readers you follow save a passage, it lands here. Popular and Recent show everyone's."
@@ -119,7 +123,7 @@ export default async function MarginaliaPage({ searchParams }: PageProps<"/margi
           }
         />
       ) : (
-        <MarginaliaFeed key={JSON.stringify(query)} initial={first} query={query} showBook={!book} />
+        <MarginaliaFeed key={JSON.stringify(query)} initial={first} query={query} showBook={saved || !book} />
       )}
     </div>
   );

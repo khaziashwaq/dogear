@@ -13,7 +13,8 @@ export function ProfileTabs({ username }: { username: string }) {
     { href: `${base}/reviews`, label: "Reviews" },
     { href: `${base}/lists`, label: "Lists" },
     { href: `${base}/quotes`, label: "Marginalia" },
-    { href: `${base}/stats`, label: "Reading year" },
+    { href: `${base}/recap`, label: "Yearbook" },
+    { href: `${base}/stats`, label: "Stats" },
   ];
   return (
     <nav aria-label="Profile sections" className="scrollbar-none -mx-4 flex gap-1 overflow-x-auto border-b border-line px-4 sm:mx-0 sm:px-0">

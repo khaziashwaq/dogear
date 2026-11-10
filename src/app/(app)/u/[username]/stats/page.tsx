@@ -34,14 +34,27 @@ export default async function StatsPage({ params, searchParams }: PageProps<"/u/
         <Squiggle className="mt-4 text-butter" />
         <dl className="mt-10 grid grid-cols-2 gap-6 sm:grid-cols-4">
           {[
-            { k: "books finished", v: s.booksReadThisYear },
-            { k: "pages turned", v: s.pagesReadThisYear.toLocaleString("en-GB") },
-            { k: "average rating", v: s.averageRating ? `${s.averageRating}★` : "—" },
-            { k: "on the go", v: s.currentlyReading },
+            {
+              k: "books finished",
+              v: s.booksReadThisYear,
+              note: s.rereadsThisYear ? `${s.rereadsThisYear} ${s.rereadsThisYear === 1 ? "was a re-read" : "were re-reads"}` : null,
+            },
+            {
+              k: "pages turned",
+              v: s.booksWithPagesThisYear ? s.pagesReadThisYear.toLocaleString("en-GB") : "—",
+              // Never guess: pages only add up for books whose page count we know.
+              note:
+                s.distinctBooksThisYear && s.booksWithPagesThisYear < s.distinctBooksThisYear
+                  ? `from ${s.booksWithPagesThisYear} of ${s.distinctBooksThisYear} books with a page count`
+                  : null,
+            },
+            { k: "average rating", v: s.averageRating ? `${s.averageRating}★` : "—", note: s.averageRating ? `books finished in ${year}` : null },
+            { k: "on the go", v: s.currentlyReading, note: null },
           ].map((x, i) => (
             <div key={x.k} className={cn("border-t pt-3", ["border-rose", "border-butter", "border-sage", "border-paper/40"][i])}>
               <dt className="meta text-paper/60">{x.k}</dt>
               <dd className="mt-1 font-serif text-5xl">{x.v}</dd>
+              {x.note && <dd className="mt-1 text-xs text-paper/60">{x.note}</dd>}
             </div>
           ))}
         </dl>
@@ -67,7 +80,7 @@ export default async function StatsPage({ params, searchParams }: PageProps<"/u/
         </section>
 
         <section className="paper p-6">
-          <h3 className="text-2xl">How generous with stars</h3>
+          <h3 className="text-2xl">How generous with stars <span className="font-sans text-sm text-ink-soft">({year})</span></h3>
           <div className="mt-6 flex h-40 items-end gap-1.5" role="img" aria-label="Rating distribution">
             {s.ratingDistribution.map((n, i) => (
               <div key={i} className="flex flex-1 flex-col items-center gap-1">
@@ -80,8 +93,8 @@ export default async function StatsPage({ params, searchParams }: PageProps<"/u/
         </section>
 
         <section className="border border-line-strong bg-rose/30 p-6">
-          <h3 className="text-2xl">Top genres <span className="font-sans text-sm text-ink-soft">(all time)</span></h3>
-          {s.topGenres.length === 0 ? <p className="mt-4 text-sm text-ink-soft">Finish a few books to see your genres.</p> : (
+          <h3 className="text-2xl">Top genres <span className="font-sans text-sm text-ink-soft">({year})</span></h3>
+          {s.topGenres.length === 0 ? <p className="mt-4 text-sm text-ink-soft">No genres yet for books finished in {year}.</p> : (
             <ul className="mt-4 space-y-2">
               {s.topGenres.map((g) => (
                 <li key={g.genre} className="flex items-center gap-3">
@@ -95,8 +108,8 @@ export default async function StatsPage({ params, searchParams }: PageProps<"/u/
         </section>
 
         <section className="border border-line-strong bg-butter/50 p-6">
-          <h3 className="text-2xl">Most-read authors</h3>
-          {s.topAuthors.length === 0 ? <p className="mt-4 text-sm text-ink-soft">No authors yet.</p> : (
+          <h3 className="text-2xl">Most-read authors <span className="font-sans text-sm text-ink-soft">({year})</span></h3>
+          {s.topAuthors.length === 0 ? <p className="mt-4 text-sm text-ink-soft">No authors yet for {year}.</p> : (
             <ol className="mt-4 space-y-1">
               {s.topAuthors.map((a, i) => (
                 <li key={a.author} className="flex items-baseline gap-3">
@@ -109,7 +122,10 @@ export default async function StatsPage({ params, searchParams }: PageProps<"/u/
           )}
         </section>
       </div>
-      <p className="meta mt-6">{s.booksRead} books read all time · {s.reviewsCount} reviews · {s.quotesCount} quotes · {s.listsCount} lists</p>
+      <p className="meta mt-6">
+        All time: {s.booksRead} books read · {s.reviewsCount} reviews · {s.quotesCount} annotations · {s.listsCount} lists
+        {s.sessionsThisYear ? ` · ${s.sessionsThisYear} diary entries in ${year}` : ""}
+      </p>
     </div>
   );
 }

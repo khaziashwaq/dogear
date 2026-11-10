@@ -178,7 +178,8 @@ export interface Quote {
 }
 
 export interface MarginaliaQuery {
-  tab: "following" | "popular" | "recent";
+  /** "saved": annotations you've bookmarked (filters don't apply). */
+  tab: "following" | "popular" | "recent" | "saved";
   genre?: string | null;
   bookId?: string | null;
   tag?: string | null;
@@ -251,6 +252,8 @@ export interface Comment {
   parentId: string | null;
   body: string;
   createdAt: string;
+  /** Set when the body was edited after posting. */
+  editedAt: string | null;
   author: Profile;
   replies: Comment[];
 }
@@ -287,20 +290,116 @@ export interface BookReader {
   updatedAt: string;
 }
 
+/**
+ * A reader's year. Everything except the all-time counts is scoped to `year`. For your own
+ * stats, completions come from your diary (re-reads count); for someone else, from their
+ * public shelf (one per book). Pages only count books with a known page count.
+ */
 export interface ProfileStats {
   year: number;
+  /** All time: books on the Read shelf. */
   booksRead: number;
+  /** Reads finished this year, re-reads included. */
   booksReadThisYear: number;
+  distinctBooksThisYear: number;
+  rereadsThisYear: number;
+  /** Diary entries started or finished this year (only visible to the reader). */
+  sessionsThisYear: number;
   pagesReadThisYear: number;
+  /** How many of this year's books had a page count (pages are only summed for those). */
+  booksWithPagesThisYear: number;
   currentlyReading: number;
+  /** For books finished this year. */
   averageRating: number | null;
   reviewsCount: number;
   quotesCount: number;
   listsCount: number;
+  /** For books finished this year: index 0 = ½★ … 9 = 5★. */
   ratingDistribution: number[];
   byMonth: number[];
   topGenres: { genre: string; count: number }[];
   topAuthors: { author: string; count: number }[];
+}
+
+/** Someone whose public shelves and taste overlap with yours, and why. */
+export interface SimilarReader {
+  profile: Profile;
+  /** 0–100. */
+  score: number;
+  sharedBooks: number;
+  sharedFavourites: number;
+  sharedAuthors: string[];
+  sharedGenres: string[];
+  /** 0–1 agreement on books you've both rated, or null if none. */
+  agreement: number | null;
+}
+
+export interface Invite {
+  code: string;
+  createdAt: string;
+  expiresAt: string | null;
+  maxUses: number | null;
+  /** How many people joined with it (never who). */
+  uses: number;
+  /** Past its expiry date or out of uses. */
+  closed: boolean;
+}
+export interface InvitePreview {
+  valid: boolean;
+  inviter: Pick<Profile, "username" | "displayName" | "avatarUrl" | "favouriteGenres">;
+}
+
+export interface RecapBook {
+  id: string;
+  slug: string;
+  title: string;
+  authors: string[];
+  coverUrl: string | null;
+}
+/** A year (month null) or a month of reading. Missing data stays null. */
+export interface ReadingRecap {
+  year: number;
+  month: number | null;
+  completions: number;
+  distinctBooks: number;
+  rereads: number;
+  pages: number;
+  booksWithPages: number;
+  averageRating: number | null;
+  byMonth: number[];
+  favouriteBook: (RecapBook & { rating: number }) | null;
+  topAuthor: { name: string; count: number } | null;
+  topGenre: { name: string; count: number } | null;
+  busiestMonth: { month: number; count: number } | null;
+  mostHighlighted: (RecapBook & { count: number }) | null;
+  lovedLine: { quoteId: string; body: string; title: string; likes: number } | null;
+  annotations: number;
+  timeline: (RecapBook & { day: string; rating: number | null; reread: boolean })[];
+}
+
+/** Which kinds of post a feed shows. */
+export type FeedFilter = "all" | "reviews" | "annotations" | "reading" | "lists";
+export type ListSort = "popular" | "recent" | "books";
+
+/** "I finished this": diary, shelf, rating and, optionally, a review, a line and a post. */
+export interface LogBookInput {
+  bookId: string;
+  finishedOn: string | null;
+  rating: number | null;
+  reread: boolean;
+  /** Private: kept in the diary only. */
+  notes: string | null;
+  review: { title: string | null; body: string; containsSpoilers: boolean } | null;
+  quote: { body: string; page: string | null } | null;
+  visibility: Visibility;
+  /** Post "finished" to the feed (a review already announces it). */
+  share: boolean;
+}
+export interface LogBookResult {
+  sessionId: string;
+  reviewId: string | null;
+  quoteId: string | null;
+  postId: string | null;
 }
 
 export interface Compatibility {

@@ -69,7 +69,7 @@ export interface PostRow {
   id: string; userId: string; kind: PostKind; bookId: string | null; reviewId: string | null; quoteId: string | null; listId: string | null;
   repostOfId: string | null; body: string | null; progressPages: number | null; progressPercent: number | null; visibility: Visibility; createdAt: string;
 }
-export interface CommentRow { id: string; postId: string; userId: string; parentId: string | null; body: string; createdAt: string }
+export interface CommentRow { id: string; postId: string; userId: string; parentId: string | null; body: string; createdAt: string; editedAt?: string | null }
 export interface LikeRow { userId: string; postId: string; createdAt: string }
 export interface RecommendationRow {
   id: string; senderId: string; recipientId: string; bookId: string; message: string | null; parentId: string | null; seenAt: string | null; createdAt: string;
@@ -84,6 +84,9 @@ export interface MuteRow { muterId: string; mutedId: string; createdAt: string }
 export interface ReportRow {
   id: string; reporterId: string; targetType: string; targetId: string; reason: string; details: string | null; status: string; createdAt: string;
 }
+
+export interface InviteRow { code: string; inviterId: string; createdAt: string; expiresAt: string | null; maxUses: number | null; uses: number }
+export interface RedemptionRow { inviteeId: string; code: string; createdAt: string }
 
 export interface DemoDB {
   version: number;
@@ -109,6 +112,8 @@ export interface DemoDB {
   blocks?: BlockRow[];
   mutes?: MuteRow[];
   reports?: ReportRow[];
+  invites?: InviteRow[];
+  redemptions?: RedemptionRow[];
 }
 
 const DB_VERSION = 3;
@@ -149,7 +154,7 @@ export function buildSeed(): DemoDB {
     version: DB_VERSION, secret: randomBytes(32).toString("hex"),
     users: [], profiles: [], follows: [], books: [], userBooks: [], sessions: [], reviews: [], quotes: [], lists: [],
     listBooks: [], listFollows: [], posts: [], comments: [], likes: [], bookmarks: [], recommendations: [], notifications: [],
-    blocks: [], mutes: [], reports: [],
+    blocks: [], mutes: [], reports: [], invites: [], redemptions: [],
   };
 
   const uid: Record<string, string> = {};
@@ -358,6 +363,8 @@ function load(): DemoDB {
         parsed.blocks ??= [];
         parsed.mutes ??= [];
         parsed.reports ??= [];
+        parsed.invites ??= [];
+        parsed.redemptions ??= [];
         return parsed;
       }
     }

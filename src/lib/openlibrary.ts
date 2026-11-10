@@ -1,5 +1,6 @@
 import "server-only";
 import type { Book, BookInput } from "@/lib/types";
+import { subjectsToMoods } from "@/lib/moods";
 import { coverFromId } from "@/lib/utils";
 
 // Open Library API — https://openlibrary.org/developers/api
@@ -188,7 +189,7 @@ export async function getOpenLibraryWork(olWorkId: string, olEditionId?: string 
     pageCount: pages && pages > 0 && pages < 20000 ? pages : null,
     language: ed ? (ed.languages?.[0]?.key === "/languages/eng" ? "English" : null) : doc?.language?.[0] === "eng" ? "English" : null,
     genres: subjectsToGenres(work.subjects),
-    moods: [],
+    moods: subjectsToMoods(work.subjects),
   };
 }
 
@@ -199,4 +200,17 @@ function cleanDescription(text: string) {
     .replace(/\r/g, "")
     .trim()
     .slice(0, 3000);
+}
+
+/** A book by ISBN: the edition Open Library has for it, as the full work record with that edition. */
+export async function getOpenLibraryByIsbn(isbn: string): Promise<BookInput | null> {
+  const clean = isbn.replace(/[^0-9X]/gi, "").toUpperCase();
+  if (!/^(97[89]\d{10}|\d{9}[\dX])$/.test(clean)) return null;
+  const edition = await getJson<{ key?: string; works?: { key: string }[] }>(`/isbn/${clean}.json`, 86_400);
+  const work = edition?.works?.[0]?.key?.replace("/works/", "");
+  const editionId = edition?.key?.replace("/books/", "") ?? null;
+  if (!work) return null;
+  const book = await getOpenLibraryWork(work, editionId);
+  if (book && clean.length === 13 && !book.isbn13) book.isbn13 = clean;
+  return book;
 }

@@ -181,12 +181,17 @@ export async function myListsAction() {
 
 // ── marginalia ─────────────────────────────────────────────────────────
 const marginaliaQuery = z.object({
-  tab: z.enum(["following", "popular", "recent"]),
+  tab: z.enum(["following", "popular", "recent", "saved"]),
   genre: z.string().max(60).nullable().optional(),
   bookId: z.string().max(80).nullable().optional(),
   tag: z.string().max(40).nullable().optional(),
 });
 
 export async function loadMarginaliaAction(query: z.input<typeof marginaliaQuery>, cursor: string | null) {
-  return run(async () => (await getStore()).listMarginalia(marginaliaQuery.parse(query), z.string().max(200).nullable().parse(cursor)));
+  return run(async () => {
+    const q = marginaliaQuery.parse(query);
+    const c = z.string().max(200).nullable().parse(cursor);
+    const store = await getStore();
+    return q.tab === "saved" ? store.listBookmarks(c, 18, "quote") : store.listMarginalia(q, c);
+  });
 }

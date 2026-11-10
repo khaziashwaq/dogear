@@ -8,13 +8,22 @@ import { FollowListButton, ListBooks } from "@/components/list/list-books";
 import { ListCover } from "@/components/list/list-cover";
 import { Avatar } from "@/components/profile/avatar";
 import { buttonClass } from "@/components/ui/button";
+import { ShareImages } from "@/components/review/review-share";
 import { ShareButton } from "@/components/ui/share-button";
 import { getStore, getViewer } from "@/lib/auth";
 import { formatDate, plural } from "@/lib/utils";
 
 export async function generateMetadata({ params }: PageProps<"/lists/[id]">): Promise<Metadata> {
   const list = await (await getStore()).getList((await params).id);
-  return list ? { title: list.title, description: list.description ?? undefined } : { title: "List not found" };
+  if (!list) return { title: "List not found" };
+  const card = `/lists/${list.id}/card?format=og`;
+  return {
+    title: list.title,
+    description: list.description ?? undefined,
+    ...(list.visibility === "public"
+      ? { openGraph: { title: list.title, description: list.description ?? undefined, images: [card] }, twitter: { card: "summary_large_image", images: [card] } }
+      : { robots: { index: false } }),
+  };
 }
 
 export default async function ListPage({ params }: PageProps<"/lists/[id]">) {
@@ -47,6 +56,16 @@ export default async function ListPage({ params }: PageProps<"/lists/[id]">) {
             <div className="flex flex-wrap gap-2">
               {!own && <FollowListButton listId={list.id} initial={list.viewerFollows} count={list.followersCount} />}
               {list.visibility === "public" && <ShareButton path={`/lists/${list.id}`} title={list.title} />}
+              {list.visibility === "public" && (
+                <ShareImages
+                  pagePath={`/lists/${list.id}`}
+                  cardPath={`/lists/${list.id}/card`}
+                  title={list.title}
+                  fileStem={`dogear-list-${list.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 40)}`}
+                  formats={["portrait", "story", "og"]}
+                  dialogTitle="Share this list as an image"
+                />
+              )}
               {own && <Link href={`/lists/${list.id}/edit`} className={buttonClass("paper", "md")}>Edit details</Link>}
             </div>
           </div>
