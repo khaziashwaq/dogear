@@ -1011,6 +1011,22 @@ export class SupabaseStore implements DataStore {
     fail(error, "Couldn't look up readers with shelves like yours");
     return ((data ?? []) as Row[]).map((r) => ({ book: mapBook(r.book), subjects: r.book.subjects ?? [], readers: r.readers, viaBookIds: r.via ?? [] }));
   }
+  async fillBookDetails(bookId: string, input: BookInput) {
+    this.me();
+    // Catalogue write: server-only, from a record the server fetched from Open Library itself.
+    const { supabaseAdmin } = await import("@/lib/supabase/admin");
+    const row = {
+      title: input.title, subtitle: input.subtitle, authors: input.authors, description: input.description,
+      cover_url: input.coverUrl, isbn13: input.isbn13, isbn10: input.isbn10, ol_edition_id: input.olEditionId,
+      published_year: input.publishedYear, publisher: input.publisher, page_count: input.pageCount, language: input.language,
+      genres: input.genres, moods: input.moods, subjects: (input.subjects ?? []).slice(0, 30),
+    };
+    const admin = supabaseAdmin();
+    let { error } = await admin.from("books").update(row).eq("id", bookId);
+    // Another catalogue book already holds that ISBN: keep everything else.
+    if (error?.code === "23505") ({ error } = await admin.from("books").update({ ...row, isbn13: null }).eq("id", bookId));
+    fail(error, "Couldn't update that book");
+  }
   async setBookSubjects(bookId: string, subjects: string[]) {
     this.me();
     // Catalogue write: server-only, from headings the server fetched from Open Library itself. Only fills a gap.

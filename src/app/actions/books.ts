@@ -4,9 +4,8 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { getStore } from "@/lib/auth";
 import { resolveBook, run, type BookRefInput } from "@/lib/server-action";
-import { searchOpenLibrary } from "@/lib/openlibrary";
 import { refreshSuggestionsSoon } from "@/lib/suggestions/trigger";
-import type { Book, ShelfStatus } from "@/lib/types";
+import type { ShelfStatus } from "@/lib/types";
 
 const status = z.enum(["want_to_read", "reading", "read", "dnf"]).nullable();
 
@@ -32,7 +31,7 @@ const moveOptions = z
 export async function setShelfStatusAction(ref: BookRefInput, value: ShelfStatus | null, opts?: z.input<typeof moveOptions>) {
   return run(async () => {
     const store = await getStore();
-    const book = await resolveBook(store, ref);
+    const book = await resolveBook(store, ref, { fast: true });
     const move = await store.setShelfStatus(book.id, status.parse(value), moveOptions.parse(opts));
     touch(book.slug);
     if (move.changed) refreshSuggestionsSoon();
@@ -139,30 +138,5 @@ export async function deleteSessionAction(sessionId: string) {
   return run(async () => {
     await (await getStore()).deleteSession(z.string().parse(sessionId));
     revalidatePath("/", "layout");
-  });
-}
-
-/** Book picker, first pass: just our catalogue, which answers in milliseconds while Open Library takes a second or two. */
-export async function searchCatalogueAction(q: string) {
-  return run(async () => {
-    const query = z.string().trim().max(120).parse(q);
-    if (query.length < 2) return [] as Book[];
-    return (await (await getStore()).searchBooks(query, 8)) as Book[];
-  });
-}
-
-/** Book picker search: our catalogue first, then Open Library, de-duplicated. */
-export async function searchBooksAction(q: string) {
-  return run(async () => {
-    const query = z.string().trim().max(120).parse(q);
-    if (query.length < 2) return [] as Book[];
-    const store = await getStore();
-    const [local, remote] = await Promise.all([store.searchBooks(query, 8), searchOpenLibrary(query, 12)]);
-    const seen = new Set(local.flatMap((b) => [b.olWorkId, b.isbn13].filter(Boolean)));
-    const titles = new Set(local.map((b) => `${b.title.toLowerCase()}|${b.authors[0]?.toLowerCase()}`));
-    return [
-      ...local,
-      ...remote.filter((b) => !seen.has(b.olWorkId) && !(b.isbn13 && seen.has(b.isbn13)) && !titles.has(`${b.title.toLowerCase()}|${b.authors[0]?.toLowerCase()}`)),
-    ].slice(0, 16) as Book[];
   });
 }

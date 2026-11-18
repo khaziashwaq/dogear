@@ -3,7 +3,7 @@
 import { BookCheck, BookMarked, BookOpen, CalendarPlus, Check, Heart, Library, MessageSquareQuote, PenLine, RotateCcw, Send, Tag, X } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useState, useTransition } from "react";
+import { useEffect, useOptimistic, useState, useTransition } from "react";
 import { addSessionAction, ensureBookAction, setCustomShelvesAction, setFavouriteAction, setProgressAction, setRatingAction, setShelfStatusAction, undoShelfMoveAction } from "@/app/actions/books";
 import { addToListAction, myListsAction } from "@/app/actions/content";
 import { searchReadersAction, sendRecommendationAction } from "@/app/actions/social";
@@ -29,6 +29,8 @@ export function ShelfActions({ book, userBook, signedIn, following }: { book: Bo
   // The log ("I finished this"): opened by Read, or by "Log another read" on a book already read.
   const [logging, setLogging] = useState<{ reread: boolean } | null>(null);
   const [pending, start] = useTransition();
+  // The shelf a click asked for, shown at once; it falls back to the saved one if the save fails.
+  const [shownStatus, showStatus] = useOptimistic(ub?.status ?? null);
   const [dialog, setDialog] = useState<null | "list" | "pass" | "log" | "shelves">(null);
   const [progress, setProgress] = useState(userBook?.progressPages ? String(userBook.progressPages) : "");
   const toast = useToast();
@@ -46,30 +48,33 @@ export function ShelfActions({ book, userBook, signedIn, following }: { book: Bo
     );
   }
 
+  // These actions revalidate the page themselves, so their response already carries the fresh render:
+  // no router.refresh() (that rendered the whole page a second time).
   const run = (
     fn: () => Promise<{ ok: true; data: { userBook: UserBook | null; undo?: Record<string, unknown> | null } } | { ok: false; error: string }>,
     msg?: string,
+    optimistic?: { status: ShelfStatus | null },
   ) =>
     start(async () => {
+      if (optimistic) showStatus(optimistic.status);
       const res = await fn();
       if (!res.ok) return toast(res.error, "error");
       setUb(res.data.userBook);
       const record = res.data.undo;
-      if (msg) toast(msg, "default", record ? { label: "Undo", onClick: () => run(() => undoShelfMoveAction(record), "Put back") } : undefined);
-      router.refresh();
+      if (msg) toast(msg, "default", record ? { label: "Undo", onClick: () => run(() => undoShelfMoveAction(record), "Put back", { status: ub?.status ?? null }) } : undefined);
     });
 
   const setStatus = (s: ShelfStatus) => {
-    const next = ub?.status === s ? null : s;
+    const next = shownStatus === s ? null : s;
     if (next === "read") return setLogging({ reread: false });
-    run(() => setShelfStatusAction(ref, next), next ? STATUSES.find((x) => x.value === next)!.done : "Removed from your shelves");
+    run(() => setShelfStatusAction(ref, next), next ? STATUSES.find((x) => x.value === next)!.done : "Removed from your shelves", { status: next });
   };
 
   return (
     <div className="space-y-5">
       <div className="grid grid-cols-2 gap-2" role="group" aria-label="Shelf">
         {STATUSES.map(({ value, label, icon: Icon }) => {
-          const on = ub?.status === value;
+          const on = shownStatus === value;
           return (
             <button
               key={value}
@@ -78,12 +83,14 @@ export function ShelfActions({ book, userBook, signedIn, following }: { book: Bo
               aria-pressed={on}
               onClick={() => setStatus(value)}
               className={cn(
-                "flex items-center justify-center gap-2 border px-3 py-2.5 text-sm transition-all",
+                "relative flex items-center justify-center gap-2 border px-3 py-2.5 text-sm transition-all",
                 on ? "border-ink bg-ink text-paper shadow-[2px_2px_0_var(--color-burgundy)]" : "border-line-strong bg-card hover:border-ink",
               )}
             >
               {on ? <Check className="size-4" /> : <Icon className="size-4" strokeWidth={1.6} />}
               {label}
+              {/* The page corner folds down on the shelf you picked, and flutters until it's saved. */}
+              {on && <span className="dog-ear" data-pending={pending} aria-hidden />}
             </button>
           );
         })}
@@ -109,7 +116,6 @@ export function ShelfActions({ book, userBook, signedIn, following }: { book: Bo
           onJustShelve={logging.reread ? undefined : () => run(() => setShelfStatusAction(ref, "read", {}), "Marked as read")}
           onLogged={({ userBook: saved }) => {
             setUb(saved);
-            router.refresh();
           }}
         />
       )}
@@ -127,7 +133,6 @@ export function ShelfActions({ book, userBook, signedIn, following }: { book: Bo
               if (!res.ok) return toast(res.error, "error");
               setUb(res.data);
               toast("Progress saved");
-              router.refresh();
             });
           }}
         >

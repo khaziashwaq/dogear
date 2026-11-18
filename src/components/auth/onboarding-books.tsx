@@ -1,12 +1,14 @@
 "use client";
 
-import { Check, Loader2, Search, X } from "lucide-react";
-import { useEffect, useRef, useState, useTransition } from "react";
-import { searchBooksAction, searchCatalogueAction, setShelfStatusAction } from "@/app/actions/books";
+import { Check, Search, X } from "lucide-react";
+import { useEffect, useState, useTransition } from "react";
+import { setShelfStatusAction } from "@/app/actions/books";
 import { BookCover } from "@/components/book/book-cover";
 import { Button } from "@/components/ui/button";
+import { PageFlip, SearchingRows } from "@/components/ui/searching";
 import { useToast } from "@/components/ui/toast";
 import { bookRef } from "@/lib/book-ref";
+import { cachedBooks, isAbort, searchBooks } from "@/lib/book-search-client";
 import type { Book, SavedBook } from "@/lib/types";
 import { authorLine, cn } from "@/lib/utils";
 
@@ -38,29 +40,41 @@ export function OnboardingBooks({
   onNext: () => void;
 }) {
   const [q, setQ] = useState("");
-  const [results, setResults] = useState<Book[]>([]);
-  const [searching, setSearching] = useState(false);
+  const [fetched, setResults] = useState<Book[]>([]);
+  const [pending, setSearching] = useState(false);
   const [added, setAdded] = useState<Map<string, SavedBook>>(new Map());
   const [busy, setBusy] = useState<string | null>(null);
   const [, start] = useTransition();
   const toast = useToast();
-  const latest = useRef(0);
   const query = q.trim().length >= 2 ? q.trim() : starter;
+  const known = query.length >= 2 ? cachedBooks(query)?.slice(0, 12) : undefined;
+  const results = known ?? fetched;
+  const searching = pending && !known;
 
   useEffect(() => {
     if (query.length < 2) return;
+    if (cachedBooks(query)) return; // rendered straight from the cache below
+    // Aborted on the next keystroke, so a slow answer for an older query never lands.
+    const ctrl = new AbortController();
+    let full = false;
     const t = setTimeout(async () => {
-      const id = ++latest.current;
-      let full = false;
       setSearching(true);
-      searchCatalogueAction(query).then((r) => id === latest.current && !full && r.ok && r.data.length && setResults(r.data));
-      const res = await searchBooksAction(query);
-      full = true;
-      if (id !== latest.current) return;
+      searchBooks(query, "catalogue", ctrl.signal)
+        .then((books) => !full && books.length && setResults(books))
+        .catch(() => {});
+      try {
+        const books = await searchBooks(query, "all", ctrl.signal);
+        full = true;
+        setResults(books.slice(0, 12));
+      } catch (e) {
+        if (isAbort(e)) return;
+      }
       setSearching(false);
-      if (res.ok) setResults(res.data.slice(0, 12));
-    }, 250);
-    return () => clearTimeout(t);
+    }, 150);
+    return () => {
+      clearTimeout(t);
+      ctrl.abort();
+    };
   }, [query]);
 
   const toggle = (b: Book) => {
@@ -92,21 +106,23 @@ export function OnboardingBooks({
       <label className="relative block">
         <span className="sr-only">Search books</span>
         <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-ink-faint" />
-        <input className="field pl-9" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Title, author or ISBN" autoComplete="off" />
-        {searching && <Loader2 className="absolute right-3 top-1/2 size-4 -translate-y-1/2 animate-spin text-ink-faint" />}
+        <input className="field pl-9 pr-10" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Title, author or ISBN" autoComplete="off" />
+        {searching && results.length > 0 && <PageFlip size="sm" className="absolute right-3 top-1/2 -translate-y-1/2" />}
       </label>
       {q.trim().length < 2 && starter && <p className="meta -mt-2 normal-case tracking-normal">Starting with {starter}</p>}
 
       <ul className="grid max-h-[46dvh] grid-cols-3 gap-x-3 gap-y-4 overflow-y-auto pr-1 sm:grid-cols-4" aria-live="polite">
         {results.map((b) => {
           const k = keyOf(b);
-          const on = added.has(k);
+          const saving = busy === k;
+          // Optimistic: the tick shows the moment it's tapped, and pulses until it's saved.
+          const on = saving ? !added.has(k) : added.has(k);
           return (
             <li key={k}>
               <button
                 type="button"
                 onClick={() => toggle(b)}
-                disabled={busy === k}
+                disabled={saving}
                 aria-pressed={on}
                 aria-label={`${on ? "Remove" : "Add"} ${b.title} by ${authorLine(b.authors)}`}
                 className="group relative block w-full text-left"
@@ -117,9 +133,10 @@ export function OnboardingBooks({
                     className={cn(
                       "absolute right-1.5 top-1.5 grid size-7 place-items-center rounded-full border shadow-sm transition-colors",
                       on ? "border-burgundy bg-burgundy text-paper" : "border-line-strong bg-card/90 text-ink-soft group-hover:text-ink",
+                      saving && "animate-pulse",
                     )}
                   >
-                    {busy === k ? <Loader2 className="size-3.5 animate-spin" /> : on ? <Check className="size-3.5" /> : <span className="text-base leading-none">+</span>}
+                    {on ? <Check className="size-3.5" /> : <span className="text-base leading-none">+</span>}
                   </span>
                 </span>
                 <span className="mt-1.5 line-clamp-2 block font-serif text-sm leading-tight">{b.title}</span>
@@ -128,6 +145,7 @@ export function OnboardingBooks({
             </li>
           );
         })}
+        <SearchingRows active={searching && results.length === 0} className="col-span-full" />
         {!searching && results.length === 0 && (
           <li className="col-span-full py-6 text-center text-sm text-ink-soft">Search for a book you know.</li>
         )}

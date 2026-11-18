@@ -208,6 +208,11 @@ export interface DataStore {
   closedSuggestionKeys(): Promise<string[]>;
   /** Books loved by readers who loved the same books as the viewer, not on the viewer's shelves. */
   coShelvedBooks(limit?: number): Promise<CoShelvedBook[]>;
+  /**
+   * Catalogue enrichment (server-side): replace a book's details with the canonical Open Library record,
+   * for a book first saved from a search result. The slug never changes, so links keep working.
+   */
+  fillBookDetails(bookId: string, input: BookInput): Promise<void>;
   /** Catalogue enrichment (server-side): store a book's cleaned Open Library subject headings. */
   setBookSubjects(bookId: string, subjects: string[]): Promise<void>;
 

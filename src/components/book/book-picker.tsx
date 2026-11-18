@@ -1,9 +1,10 @@
 "use client";
 
-import { Loader2, Search } from "lucide-react";
+import { Search } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { searchBooksAction, searchCatalogueAction } from "@/app/actions/books";
 import { Dialog } from "@/components/ui/dialog";
+import { PageFlip, SearchingRows } from "@/components/ui/searching";
+import { cachedBooks, isAbort, searchBooks } from "@/lib/book-search-client";
 import type { Book } from "@/lib/types";
 import { authorLine } from "@/lib/utils";
 import { BookCover } from "./book-cover";
@@ -15,8 +16,6 @@ export function BookPicker({ open, onClose, onPick, title = "Find a book", sugge
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const input = useRef<HTMLInputElement>(null);
-  // Only the latest query may write results: a slow Open Library answer for "brot" must not replace "brothers".
-  const latest = useRef(0);
 
   useEffect(() => {
     if (open) setTimeout(() => input.current?.focus(), 50);
@@ -24,37 +23,50 @@ export function BookPicker({ open, onClose, onPick, title = "Find a book", sugge
 
   useEffect(() => {
     if (q.trim().length < 2) return;
+    // Searched before this session: rendered straight from the cache below, nothing to fetch.
+    if (cachedBooks(q)) return;
+    // Aborting on the next keystroke means a slow Open Library answer for "brot" can never replace "brothers".
+    const ctrl = new AbortController();
+    let full = false;
     const t = setTimeout(async () => {
-      const id = ++latest.current;
-      let full = false;
       setPending(true);
-      // Our own catalogue first (instant), then the full list once Open Library answers.
-      searchCatalogueAction(q).then((res) => {
-        if (id === latest.current && !full && res.ok) setResults(res.data);
-      });
-      const res = await searchBooksAction(q);
-      full = true;
-      if (id !== latest.current) return;
+      setError(null);
+      // Our own catalogue first (milliseconds), then the full list once Open Library answers. The two run in parallel.
+      searchBooks(q, "catalogue", ctrl.signal)
+        .then((books) => {
+          if (!full) setResults(books);
+        })
+        .catch(() => {});
+      try {
+        const books = await searchBooks(q, "all", ctrl.signal);
+        full = true;
+        setResults(books);
+      } catch (e) {
+        if (isAbort(e)) return;
+        setError(e instanceof Error ? e.message : "Search isn't working right now.");
+      }
       setPending(false);
-      if (res.ok) {
-        setResults(res.data);
-        setError(null);
-      } else setError(res.error);
-    }, 250);
-    return () => clearTimeout(t);
+    }, 150);
+    return () => {
+      clearTimeout(t);
+      ctrl.abort();
+    };
   }, [q]);
 
-  const list = q.trim().length >= 2 ? results ?? [] : suggestions;
+  const searching = q.trim().length >= 2;
+  const known = searching ? cachedBooks(q) : undefined;
+  const list = searching ? known ?? results ?? [] : suggestions;
+  const busy = pending && searching && !known;
 
   return (
     <Dialog open={open} onClose={onClose} title={title} description="Search by title, author or ISBN.">
       <label className="relative block">
         <span className="sr-only">Search books</span>
         <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-ink-faint" />
-        <input ref={input} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Piranesi, Rooney, 9780…" className="field pl-9" autoComplete="off" />
-        {pending && <Loader2 className="absolute right-3 top-1/2 size-4 -translate-y-1/2 animate-spin text-ink-faint" />}
+        <input ref={input} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Piranesi, Rooney, 9780…" className="field pl-9 pr-10" autoComplete="off" />
+        {busy && list.length > 0 && <PageFlip size="sm" className="absolute right-3 top-1/2 -translate-y-1/2" />}
       </label>
-      {error && <p className="mt-3 text-sm text-burgundy">{error}</p>}
+      {error && !known && <p className="mt-3 text-sm text-burgundy">{error}</p>}
       {q.trim().length < 2 && suggestions.length > 0 && <p className="meta mt-4">From your shelves</p>}
       <ul className="mt-3 max-h-[50dvh] divide-y divide-line overflow-y-auto">
         {list.map((b) => (
@@ -69,10 +81,8 @@ export function BookPicker({ open, onClose, onPick, title = "Find a book", sugge
             </button>
           </li>
         ))}
-        {q.trim().length >= 2 && pending && (
-          <li className="meta py-3 text-center normal-case tracking-normal" aria-live="polite">Searching Open Library…</li>
-        )}
-        {q.trim().length >= 2 && results && results.length === 0 && !pending && (
+        <SearchingRows active={busy && list.length === 0} placeholders />
+        {searching && list.length === 0 && (known || (results && !pending)) && (
           <li className="py-6 text-center text-sm text-ink-soft">No books found for “{q}”. Try the author&rsquo;s surname or an ISBN.</li>
         )}
       </ul>

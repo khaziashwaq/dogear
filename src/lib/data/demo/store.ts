@@ -1373,6 +1373,12 @@ export class DemoStore implements DataStore {
       .slice(0, Math.min(Math.max(limit, 1), 60))
       .map(({ row, p }) => ({ book: toBook(row), subjects: row.subjects ?? [], readers: p.readers.size, viaBookIds: [...p.via].sort().slice(0, 3) }));
   }
+  async fillBookDetails(bookId: string, input: BookInput) {
+    const row = this.db.books.find((b) => b.id === bookId);
+    if (!row) return;
+    Object.assign(row, { ...input, olWorkId: row.olWorkId, subjects: (input.subjects ?? []).slice(0, 30) });
+    this.commit();
+  }
   async setBookSubjects(bookId: string, subjects: string[]) {
     const row = this.db.books.find((b) => b.id === bookId);
     if (!row || (row.subjects?.length ?? 0) > 0) return;

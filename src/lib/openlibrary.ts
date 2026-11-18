@@ -11,12 +11,12 @@ import { coverFromId } from "@/lib/utils";
 const BASE = "https://openlibrary.org";
 const HEADERS = { "User-Agent": "dogear/1.0 (social reading app)", Accept: "application/json" };
 
-async function getJson<T>(path: string, revalidate = 3600): Promise<T | null> {
+async function getJson<T>(path: string, revalidate = 3600, timeoutMs = 4500): Promise<T | null> {
   try {
     const res = await fetch(`${BASE}${path}`, {
       headers: HEADERS,
       next: { revalidate },
-      signal: AbortSignal.timeout(4500),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     if (!res.ok) return null;
     return (await res.json()) as T;
@@ -96,10 +96,14 @@ function docToBook(d: SearchDoc): Book {
 const FIELDS =
   "key,title,subtitle,author_name,first_publish_year,cover_i,number_of_pages_median,cover_edition_key,editions,editions.key,editions.title,editions.cover_i,editions.publisher";
 
-export async function searchOpenLibrary(q: string, limit = 20): Promise<Book[]> {
+// Open Library search regularly takes 3–10s; the picker shows our own catalogue meanwhile, so wait for it
+// rather than give up at 4.5s and report "no books found".
+export async function searchOpenLibrary(q: string, limit = 20, timeoutMs = 10_000): Promise<Book[]> {
   if (!q.trim()) return [];
   const data = await getJson<{ docs: SearchDoc[] }>(
     `/search.json?q=${encodeURIComponent(q)}&limit=${limit}&lang=en&fields=${FIELDS}`,
+    3600,
+    timeoutMs,
   );
   return (data?.docs ?? []).filter((d) => d.key?.startsWith("/works/")).map(docToBook);
 }
@@ -144,18 +148,19 @@ interface EditionJson {
  * `olEditionId` is the edition the reader picked in search (say, Penguin Classics): its title, cover,
  * publisher, pages and ISBN win over the work's, which often describe the first, untranslated edition.
  */
-export async function getOpenLibraryWork(olWorkId: string, olEditionId?: string | null): Promise<BookInput | null> {
+export async function getOpenLibraryWork(olWorkId: string, olEditionId?: string | null, timeoutMs = 4500): Promise<BookInput | null> {
   if (!/^OL\d+W$/.test(olWorkId)) return null;
   const editionId = olEditionId && /^OL\d+M$/.test(olEditionId) ? olEditionId : null;
   // One round trip: the work record (description, subjects, covers) alongside the search index's summary of
   // the same work (author names, page count, ISBNs, publisher), instead of work → editions → each author.
   const [work, indexed, edition] = await Promise.all([
-    getJson<WorkJson>(`/works/${olWorkId}.json`, 86_400),
+    getJson<WorkJson>(`/works/${olWorkId}.json`, 86_400, timeoutMs),
     getJson<{ docs: (SearchDoc & { language?: string[] })[] }>(
       `/search.json?q=${encodeURIComponent(`key:/works/${olWorkId}`)}&limit=1&fields=key,author_name,cover_i,number_of_pages_median,isbn,publisher,first_publish_year,cover_edition_key,language`,
       86_400,
+      timeoutMs,
     ),
-    editionId ? getJson<EditionJson>(`/books/${editionId}.json`, 86_400) : Promise.resolve(null),
+    editionId ? getJson<EditionJson>(`/books/${editionId}.json`, 86_400, timeoutMs) : Promise.resolve(null),
   ]);
   if (!work) return null;
   // Ignore an edition that belongs to some other work.
@@ -165,7 +170,7 @@ export async function getOpenLibraryWork(olWorkId: string, olEditionId?: string 
   if (!authors.length) {
     // The search index can lag behind a newly added work; fall back to the author records.
     const names = await Promise.all(
-      (work.authors ?? []).slice(0, 3).map(async (a) => (await getJson<{ name: string }>(`${a.author.key}.json`, 86_400))?.name),
+      (work.authors ?? []).slice(0, 3).map(async (a) => (await getJson<{ name: string }>(`${a.author.key}.json`, 86_400, timeoutMs))?.name),
     );
     authors = names.filter(Boolean) as string[];
   }
